@@ -1,0 +1,13 @@
+#ifndef HW_CONFIG_H
+#define HW_CONFIG_H
+
+#define LED_PIN 13
+#define I2C_SDA_PIN GPIO_NUM_21
+#define I2C_SCL_PIN GPIO_NUM_22
+#define I2C_PORT I2C_NUM_0
+#define I2C_CLK_FREQ_HZ 100000
+
+#define LSM6DSOX_LOW_ADDR_GYRO  0x22
+#define LSM6DSOX_LOW_ADDR_ACCEL  0x28
+
+#endif // HW_CONFIG_H

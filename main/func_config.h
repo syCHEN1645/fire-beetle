@@ -1,0 +1,1 @@
+#define SINGLE_ACTION_TIME_MS 3000
