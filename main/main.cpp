@@ -1,6 +1,6 @@
 // Choose to define device as central or peripheral
-// #define DEVICE_CENTRAL
-#define DEVICE_PERIPHERAL
+#define DEVICE_CENTRAL
+// #define DEVICE_PERIPHERAL
 
 #if defined(DEVICE_CENTRAL) && defined(DEVICE_PERIPHERAL)
 #error "Defined 2 roles"
@@ -31,6 +31,7 @@
 // IMU data buffers
 uint8_t imu_data_buffer[12];
 float imu_data_collection[6][312];
+float all_imu_data[4][6][312];
 uint16_t imu_data_collection_count = 0;
 // IMU zero calibration data (double to avoid integer division)
 float imu_zero_calibration[6];
@@ -39,11 +40,18 @@ float accel_rotation[3][3];
 
 // Central/Peripheral specific data
 #ifdef DEVICE_CENTRAL
-static uint8_t boardcast_mac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
 // Central-specific data
-#else
+static uint8_t boardcast_mac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static const uint8_t LEFT_LOWER_MAC[]  = LEFT_LOWER_MAC_ADDR;
+static const uint8_t LEFT_UPPER_MAC[]  = LEFT_UPPER_MAC_ADDR;
+static const uint8_t RIGHT_LOWER_MAC[] = RIGHT_LOWER_MAC_ADDR;
+static const uint8_t RIGHT_UPPER_MAC[] = RIGHT_UPPER_MAC_ADDR;
+
+#endif
+
+#ifdef DEVICE_PERIPHERAL
 // Peripheral-specific data
+
 #endif
 
 // -----------IMU-----------
@@ -114,19 +122,45 @@ static void wifi_init()
 static void espnow_receive_callback(
     const esp_now_recv_info_t *recv_info,
     const uint8_t *data,
-    int len)
-{
-    if (data == nullptr || len <= 0) {
+    int len) {
+    imu_msg_t imu_msg;
+    if (len == sizeof(imu_msg_t)) {
+        memcpy(&imu_msg, data, sizeof(imu_msg_t));
+    }
+
+    size_t imu_index = SIZE_MAX;
+    // check the mac address of the sender
+    if (memcmp(recv_info->src_addr, LEFT_LOWER_MAC, 6) == 0) {
+        imu_index = 0;
+    } else if (memcmp(recv_info->src_addr, LEFT_UPPER_MAC, 6) == 0) {
+        imu_index = 1;
+    } else if (memcmp(recv_info->src_addr, RIGHT_LOWER_MAC, 6) == 0) {
+        imu_index = 2;
+    } else if (memcmp(recv_info->src_addr, RIGHT_UPPER_MAC, 6) == 0) {
+        imu_index = 3;
+    } else {
+        ESP_LOGW("ESP-NOW", "Received IMU message from unknown MAC address");
         return;
     }
 
-    ESP_LOGI(
-        "ESP-NOW",
-        "Received %d bytes: %.*s",
-        len,
-        len,
-        reinterpret_cast<const char *>(data)
-    );
+    // store the received imu message into the all_imu_data buffer
+    // struct imu_msg_t {
+    //     float accel_x;
+    //     float accel_y;
+    //     float accel_z;
+    //     float gyro_x;
+    //     float gyro_y;
+    //     float gyro_z;
+    //     int index;
+    // };
+    if (imu_index != SIZE_MAX) {
+        all_imu_data[imu_index][0][imu_msg.index] = imu_msg.accel_x;
+        all_imu_data[imu_index][1][imu_msg.index] = imu_msg.accel_y;
+        all_imu_data[imu_index][2][imu_msg.index] = imu_msg.accel_z;
+        all_imu_data[imu_index][3][imu_msg.index] = imu_msg.gyro_x;
+        all_imu_data[imu_index][4][imu_msg.index] = imu_msg.gyro_y;
+        all_imu_data[imu_index][5][imu_msg.index] = imu_msg.gyro_z;
+    }
 }
 
 static void espnow_send_callback(
@@ -160,24 +194,38 @@ static void send_start_msg() {
     send_ctrl_msg(msg);
 }
 
-#else
+#endif
+
+#ifdef DEVICE_PERIPHERAL
+
+static void handle_control_message(const ctrl_msg_t& msg) {
+    switch (msg.type)
+    {
+        case MessageType::START:
+            collecting = true;
+            ESP_LOGI("RECV", "START received");
+            break;
+
+        case MessageType::END:
+            collecting = false;
+            ESP_LOGI("RECV", "END received");
+            break;
+
+        case MessageType::SYNC:
+            ESP_LOGI("RECV", "SYNC received");
+            break;
+    }
+}
 
 static void espnow_receive_callback(
     const esp_now_recv_info_t *recv_info,
     const uint8_t *data,
-    int len)
-{
-    if (data == nullptr || len <= 0) {
-        return;
+    int len) {
+    if (len == sizeof(ctrl_msg_t)) {
+        ctrl_msg_t msg;
+        memcpy(&msg, data, sizeof(ctrl_msg_t));
+        handle_control_message(msg);
     }
-
-    ESP_LOGI(
-        "ESP-NOW",
-        "Received %d bytes: %.*s",
-        len,
-        len,
-        reinterpret_cast<const char *>(data)
-    );
 }
 
 static void espnow_send_callback(
@@ -198,6 +246,23 @@ static void espnow_init()
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_receive_callback));
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_callback));
 
+#ifdef DEVICE_CENTRAL
+    esp_now_peer_info_t peer_info{};
+    memcpy(
+        peer_info.peer_addr,
+        boardcast_mac,
+        ESP_NOW_ETH_ALEN
+    );
+    peer_info.channel = ESPNOW_CHANNEL;
+    peer_info.ifidx = WIFI_IF_STA;
+    peer_info.encrypt = false;
+
+    ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
+
+    ESP_LOGI("ESP-NOW", "ESP-NOW sender ready");
+#endif
+
+#ifdef DEVICE_PERIPHERAL
     // set up peer info for sending to the central device
     esp_now_peer_info_t peer_info{};
     memcpy(
@@ -213,6 +278,7 @@ static void espnow_init()
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
     ESP_LOGI("ESP-NOW", "ESP-NOW receiver ready");
+#endif
 }
 
 
@@ -274,4 +340,13 @@ extern "C" void app_main() {
 
 
     // set send/receive routines
+#ifdef DEVICE_CENTRAL
+    // if a button is pressed
+    // central device
+    send_start_msg();
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+#else
+    // peripheral device
+#endif
 }
