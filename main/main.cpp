@@ -1,6 +1,6 @@
 // Choose to define device as central or peripheral
-#define DEVICE_CENTRAL
-// #define DEVICE_PERIPHERAL
+// #define DEVICE_CENTRAL
+#define DEVICE_PERIPHERAL
 
 #if defined(DEVICE_CENTRAL) && defined(DEVICE_PERIPHERAL)
 #error "Defined 2 roles"
@@ -36,6 +36,15 @@ uint16_t imu_data_collection_count = 0;
 float imu_zero_calibration[6];
 float gyro_offset[3];
 float accel_rotation[3][3];
+
+// Central/Peripheral specific data
+#ifdef DEVICE_CENTRAL
+static uint8_t boardcast_mac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// Central-specific data
+#else
+// Peripheral-specific data
+#endif
 
 // -----------IMU-----------
 
@@ -99,6 +108,9 @@ static void wifi_init()
     );
 }
 
+#ifdef DEVICE_CENTRAL
+// if this is the central device
+
 static void espnow_receive_callback(
     const esp_now_recv_info_t *recv_info,
     const uint8_t *data,
@@ -127,17 +139,64 @@ static void espnow_send_callback(
     }
 }
 
+static void send_ctrl_msg(const ctrl_msg_t &msg) {
+    esp_err_t result = esp_now_send(
+        boardcast_mac,
+        reinterpret_cast<const uint8_t *>(&msg),
+        sizeof(msg)
+    );
+    if (result == ESP_OK) {
+        ESP_LOGI("ESP-NOW", "Control message sent successfully");
+    } else {
+        ESP_LOGE("ESP-NOW", "Failed to send control message");
+    }
+}
+
+static void send_start_msg() {
+    ctrl_msg_t msg;
+    msg.timestamp = xTaskGetTickCount();
+    msg.index = 0;
+    msg.type = MessageType::START;
+    send_ctrl_msg(msg);
+}
+
+#else
+
+static void espnow_receive_callback(
+    const esp_now_recv_info_t *recv_info,
+    const uint8_t *data,
+    int len)
+{
+    if (data == nullptr || len <= 0) {
+        return;
+    }
+
+    ESP_LOGI(
+        "ESP-NOW",
+        "Received %d bytes: %.*s",
+        len,
+        len,
+        reinterpret_cast<const char *>(data)
+    );
+}
+
+static void espnow_send_callback(
+    const esp_now_send_info_t *tx_info,
+    esp_now_send_status_t status) {
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        ESP_LOGI("ESP-NOW", "ESP-NOW send success");
+    } else {
+        ESP_LOGE("ESP-NOW", "ESP-NOW send failed");
+    }
+}
+#endif
+
 static void espnow_init()
 {
     ESP_ERROR_CHECK(esp_now_init());
 
-    ESP_ERROR_CHECK(
-        esp_now_register_recv_cb(espnow_receive_callback)
-    );
-
-    ESP_ERROR_CHECK(
-        esp_now_register_send_cb(espnow_send_callback)
-    );
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_receive_callback));
+    ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_callback));
 
     // set up peer info for sending to the central device
     esp_now_peer_info_t peer_info{};
@@ -212,4 +271,7 @@ extern "C" void app_main() {
     wifi_init();
     display_mac_address();
     espnow_init();
+
+
+    // set send/receive routines
 }
