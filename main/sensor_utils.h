@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "func_config.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
@@ -13,7 +14,7 @@ extern "C" {
 #endif
 
 extern uint8_t imu_data_buffer[12];
-extern float imu_data_collection[6][312];
+extern float imu_data_collection[6][IMU_DATA_LEN];
 extern uint16_t imu_data_collection_count;
 extern float imu_zero_calibration[6];
 extern float gyro_offset[3];

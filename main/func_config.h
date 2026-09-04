@@ -1,7 +1,16 @@
 #define SINGLE_ACTION_TIME_MS 3000
+#define IMU_DATA_F 28
+#define IMU_DATA_LEN 28*3
 // TODO: pending update
 #define CENTRAL_MAC_ADDR      {0x01, 0x01, 0x01, 0x01, 0x01, 0x01}
 #define LEFT_LOWER_MAC_ADDR   {0x01, 0x01, 0x01, 0x01, 0x01, 0x01}
 #define LEFT_UPPER_MAC_ADDR   {0x02, 0x02, 0x02, 0x02, 0x02, 0x02}
 #define RIGHT_LOWER_MAC_ADDR  {0x03, 0x03, 0x03, 0x03, 0x03, 0x03}
 #define RIGHT_UPPER_MAC_ADDR  {0x04, 0x04, 0x04, 0x04, 0x04, 0x04}
+
+// 38:18:2b:18:4e:50
+// 38:18:2b:18:e4:38
+// 38:18:2b:13:4f:bc
+// 38:18:2b:18:70:18
+#define DATA_COLLECT_WIFI_SSID "csy"
+#define DATA_COLLECT_WIFI_PASSWORD "55555555"

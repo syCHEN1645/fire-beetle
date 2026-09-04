@@ -30,17 +30,21 @@
 
 // IMU data buffers
 uint8_t imu_data_buffer[12];
-float imu_data_collection[6][312];
-float all_imu_data[4][6][312];
+float imu_data_collection[6][IMU_DATA_LEN];
+float all_imu_data[4][6][IMU_DATA_LEN];
 uint16_t imu_data_collection_count = 0;
 // IMU zero calibration data (double to avoid integer division)
 float imu_zero_calibration[6];
 float gyro_offset[3];
 float accel_rotation[3][3];
 
+i2c_master_bus_handle_t bus_handle;
+i2c_master_dev_handle_t dev_handle;
+
 // Central/Peripheral specific data
 #ifdef DEVICE_CENTRAL
 // Central-specific data
+// MAC addr
 static uint8_t boardcast_mac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static const uint8_t LEFT_LOWER_MAC[]  = LEFT_LOWER_MAC_ADDR;
 static const uint8_t LEFT_UPPER_MAC[]  = LEFT_UPPER_MAC_ADDR;
@@ -88,7 +92,7 @@ void data_collection_callback(i2c_master_dev_handle_t dev_handle) {
         imu_data_collection[i][imu_data_collection_count] = imu_data[i];
     }
     imu_data_collection_count++;
-    if (imu_data_collection_count >= 312) {
+    if (imu_data_collection_count >= IMU_DATA_LEN) {
         imu_data_collection_count = 0;
     }
 
@@ -99,21 +103,54 @@ void data_collection_callback(i2c_master_dev_handle_t dev_handle) {
 }
 
 // ----------------ESP-NOW----------------
-
-static void wifi_init()
-{
+static void wifi_init() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+
+#ifdef DEVICE_CENTRAL
+    wifi_config_t wifi_config{};
+
+    strcpy(
+        reinterpret_cast<char *>(wifi_config.sta.ssid),
+        DATA_COLLECT_WIFI_SSID
+    );
+
+    strcpy(
+        reinterpret_cast<char *>(wifi_config.sta.password),
+        DATA_COLLECT_WIFI_PASSWORD
+    );
 
     ESP_ERROR_CHECK(
-        esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE)
+        esp_wifi_set_config(
+            WIFI_IF_STA,
+            &wifi_config
+        )
     );
+
+#endif
+
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+#ifdef DEVICE_CENTRAL
+
+    ESP_ERROR_CHECK(esp_wifi_connect());
+    // delay to ensure connection is established
+    // vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+#endif
+
+#ifdef DEVICE_PERIPHERAL
+    ESP_ERROR_CHECK(
+        esp_wifi_set_channel(
+            ESPNOW_CHANNEL,
+            WIFI_SECOND_CHAN_NONE
+        )
+    );
+#endif
 }
 
 #ifdef DEVICE_CENTRAL
@@ -160,6 +197,7 @@ static void espnow_receive_callback(
         all_imu_data[imu_index][3][imu_msg.index] = imu_msg.gyro_x;
         all_imu_data[imu_index][4][imu_msg.index] = imu_msg.gyro_y;
         all_imu_data[imu_index][5][imu_msg.index] = imu_msg.gyro_z;
+        imu_data_collection_count = imu_msg.index;
     }
 }
 
@@ -239,48 +277,90 @@ static void espnow_send_callback(
 }
 #endif
 
-static void espnow_init()
-{
+void read_imu_task(void *arg) {
+    if (imu_data_collection_count >= IMU_DATA_LEN) {
+        imu_data_collection_count = 0;
+        // suspend the data collection process
+        vTaskSuspend(NULL);
+    }
+    
+    esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
+    if (err != ESP_OK) {
+        ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+    }
+    float imu_data[6];
+    parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
+
+    // preprocess
+    for (int i = 0; i < 6; i++) {
+        all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
+    }
+    imu_data_collection_count++;
+    vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
+}
+
+/// @brief Initialize ESP-NOW communication. Assume Wi-Fi is already initialized and connected.
+/// @param channel The Wi-Fi channel to use for ESP-NOW communication.
+static void espnow_init(uint8_t channel) {
     ESP_ERROR_CHECK(esp_now_init());
 
-    ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_receive_callback));
-    ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_callback));
+    ESP_ERROR_CHECK(
+        esp_now_register_recv_cb(espnow_receive_callback)
+    );
+
+    ESP_ERROR_CHECK(
+        esp_now_register_send_cb(espnow_send_callback)
+    );
 
 #ifdef DEVICE_CENTRAL
+    // Central sends control messages to all peripherals
+    // using the broadcast MAC address.
     esp_now_peer_info_t peer_info{};
     memcpy(
         peer_info.peer_addr,
         boardcast_mac,
         ESP_NOW_ETH_ALEN
     );
-    peer_info.channel = ESPNOW_CHANNEL;
+    // channel 0 is the current channel
+    peer_info.channel = 0;
     peer_info.ifidx = WIFI_IF_STA;
     peer_info.encrypt = false;
 
-    ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
+    ESP_ERROR_CHECK(
+        esp_now_add_peer(&peer_info)
+    );
 
-    ESP_LOGI("ESP-NOW", "ESP-NOW sender ready");
+    ESP_LOGI(
+        "ESP-NOW",
+        "Central ESP-NOW ready, channel %u",
+        channel
+    );
+
 #endif
 
 #ifdef DEVICE_PERIPHERAL
-    // set up peer info for sending to the central device
+    // Peripheral sends IMU data to the central device.
     esp_now_peer_info_t peer_info{};
     memcpy(
         peer_info.peer_addr,
         CENTRAL_MAC_ADDR,
         ESP_NOW_ETH_ALEN
     );
-    peer_info.channel = ESPNOW_CHANNEL;
+    peer_info.channel = channel;
     peer_info.ifidx = WIFI_IF_STA;
-    // TODO: to check if encryption needed
     peer_info.encrypt = false;
 
-    ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
+    ESP_ERROR_CHECK(
+        esp_now_add_peer(&peer_info)
+    );
 
-    ESP_LOGI("ESP-NOW", "ESP-NOW receiver ready");
+    ESP_LOGI(
+        "ESP-NOW",
+        "Peripheral ESP-NOW ready, channel %u",
+        channel
+    );
 #endif
 }
-
 
 void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle) {
     i2c_master_bus_config_t bus_config = {
@@ -322,8 +402,7 @@ void display_mac_address() {
 
 extern "C" void app_main() {
     // initialize I2C master
-    i2c_master_bus_handle_t bus_handle;
-    i2c_master_dev_handle_t dev_handle;
+
     i2c_master_init(&bus_handle, &dev_handle);
 
     esp_err_t ret = nvs_flash_init();
@@ -333,14 +412,29 @@ extern "C" void app_main() {
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-    // start wifi and esp-now
-    wifi_init();
-    display_mac_address();
-    espnow_init();
 
+    // start wifi and esp-now
+    
+#ifdef DEVICE_CENTRAL
+    // get actual wifi channel
+    wifi_init();
+    // make sure wifi is connected
+    // TODO: change to while loop
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    display_mac_address();
+    
+    uint8_t primary_channel;
+    wifi_second_chan_t secondary_channel;
+    ESP_ERROR_CHECK(
+        esp_wifi_get_channel(
+            &primary_channel,
+            &secondary_channel
+        )
+    );
+    espnow_init(primary_channel);
 
     // set send/receive routines
-#ifdef DEVICE_CENTRAL
+
     // if a button is pressed
     // central device
     send_start_msg();
@@ -349,4 +443,15 @@ extern "C" void app_main() {
 #else
     // peripheral device
 #endif
+
+    static TaskHandle_t read_imu_task_handle = NULL;
+    xTaskCreatePinnedToCore(
+        read_imu_task,
+        "Read IMU Task",
+        4096,
+        NULL,
+        5,
+        &read_imu_task_handle,
+        tskNO_AFFINITY
+    );
 }

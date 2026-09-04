@@ -10,6 +10,4 @@
 #define LSM6DSOX_LOW_ADDR_GYRO  0x22
 #define LSM6DSOX_LOW_ADDR_ACCEL  0x28
 
-#define ESPNOW_CHANNEL 1
-
 #endif // HW_CONFIG_H
