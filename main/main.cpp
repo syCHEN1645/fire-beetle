@@ -142,15 +142,6 @@ static void wifi_init() {
     // vTaskDelay(1000 / portTICK_PERIOD_MS);
 
 #endif
-
-#ifdef DEVICE_PERIPHERAL
-    ESP_ERROR_CHECK(
-        esp_wifi_set_channel(
-            ESPNOW_CHANNEL,
-            WIFI_SECOND_CHAN_NONE
-        )
-    );
-#endif
 }
 
 #ifdef DEVICE_CENTRAL
@@ -299,9 +290,67 @@ void read_imu_task(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
 }
 
+#ifdef DEVICE_PERIPHERAL
+/// @brief Scan for the Wi-Fi channel of the project Wi-Fi network.
+/// @return The Wi-Fi channel of the project network, or 0 if not found.
+static uint8_t scan_wifi_channel()
+{
+    wifi_scan_config_t scan_config{};
+
+    // Scan all Wi-Fi channels
+    scan_config.channel = 0;
+    scan_config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    ESP_ERROR_CHECK(
+        esp_wifi_scan_start(&scan_config, true)
+    );
+
+    uint16_t ap_count = 0;
+    ESP_ERROR_CHECK(
+        esp_wifi_scan_get_ap_num(&ap_count)
+    );
+
+    if (ap_count == 0) {
+        ESP_LOGE("WIFI", "No APs found");
+        return 0;
+    }
+
+    wifi_ap_record_t *ap_records = new wifi_ap_record_t[ap_count];
+    ESP_ERROR_CHECK(
+        esp_wifi_scan_get_ap_records(
+            &ap_count,
+            ap_records
+        )
+    );
+
+    uint8_t found_channel = 0;
+    for (int i = 0; i < ap_count; i++) {
+        ESP_LOGI(
+            "WIFI",
+            "Found SSID: %s, channel: %d",
+            reinterpret_cast<char *>(ap_records[i].ssid),
+            ap_records[i].primary
+        );
+
+        if (strcmp(reinterpret_cast<char *>(ap_records[i].ssid), DATA_COLLECT_WIFI_SSID) == 0) {
+            found_channel = ap_records[i].primary;
+            ESP_LOGI(
+                "WIFI",
+                "Found project Wi-Fi on channel %d",
+                found_channel
+            );
+            break;
+        }
+    }
+    delete[] ap_records;
+
+    return found_channel;
+}
+#endif
+
+
 /// @brief Initialize ESP-NOW communication. Assume Wi-Fi is already initialized and connected.
 /// @param channel The Wi-Fi channel to use for ESP-NOW communication.
-static void espnow_init(uint8_t channel) {
+static void espnow_init(uint8_t channel = 0) {
     ESP_ERROR_CHECK(esp_now_init());
 
     ESP_ERROR_CHECK(
@@ -322,7 +371,7 @@ static void espnow_init(uint8_t channel) {
         ESP_NOW_ETH_ALEN
     );
     // channel 0 is the current channel
-    peer_info.channel = 0;
+    peer_info.channel = channel;
     peer_info.ifidx = WIFI_IF_STA;
     peer_info.encrypt = false;
 
@@ -414,15 +463,14 @@ extern "C" void app_main() {
     ESP_ERROR_CHECK(ret);
 
     // start wifi and esp-now
-    
-#ifdef DEVICE_CENTRAL
-    // get actual wifi channel
     wifi_init();
-    // make sure wifi is connected
-    // TODO: change to while loop
     vTaskDelay(pdMS_TO_TICKS(3000));
     display_mac_address();
     
+#ifdef DEVICE_CENTRAL
+    // get actual wifi channel
+    // make sure wifi is connected
+    // TODO: change to while loop
     uint8_t primary_channel;
     wifi_second_chan_t secondary_channel;
     ESP_ERROR_CHECK(
@@ -435,15 +483,35 @@ extern "C" void app_main() {
 
     // set send/receive routines
 
-    // if a button is pressed
+    // TODO: if a button is pressed
     // central device
     send_start_msg();
     vTaskDelay(pdMS_TO_TICKS(20));
 
 #else
     // peripheral device
-#endif
+    uint8_t count, channel = 0;
+    while (channel == 0 && count <= 5) {
+        channel = scan_wifi_channel();
+        if (channel != 0) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        count++;
+    }
+    if (count > 5) {
+        ESP_LOGE(
+            "WIFI",
+            "Project Wi-Fi not found"
+        );
+        return;
+    }
 
+    LOGI("WIFI", "Scanned Wi-Fi channel: %u", channel);
+    espnow_init(channel);
+
+#endif
+    // all firebeetles should have the task to read its own imu
     static TaskHandle_t read_imu_task_handle = NULL;
     xTaskCreatePinnedToCore(
         read_imu_task,
