@@ -23,6 +23,7 @@
 #include "esp_now.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_http_client.h"
 
 #include "hw_config.h"
 #include "func_config.h"
@@ -156,6 +157,15 @@ static void espnow_receive_callback(
         memcpy(&imu_msg, data, sizeof(imu_msg_t));
     }
 
+    if (imu_msg.index >= IMU_DATA_LEN) {
+        ESP_LOGW(
+            "ESP-NOW",
+            "Invalid IMU index: %d",
+            imu_msg.index
+        );
+        return;
+    }
+
     size_t imu_index = SIZE_MAX;
     // check the mac address of the sender
     if (memcmp(recv_info->src_addr, LEFT_LOWER_MAC, 6) == 0) {
@@ -270,6 +280,7 @@ static void espnow_send_callback(
 
 void read_imu_task(void *arg) {
     if (imu_data_collection_count >= IMU_DATA_LEN) {
+        send_imu_data_to_laptop();
         imu_data_collection_count = 0;
         // suspend the data collection process
         vTaskSuspend(NULL);
@@ -288,6 +299,63 @@ void read_imu_task(void *arg) {
     }
     imu_data_collection_count++;
     vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
+}
+
+static void send_imu_data_to_laptop() {
+    esp_http_client_config_t config = {};
+    config.url = DATA_COLLECT_URL;
+
+    esp_http_client_handle_t client =
+        esp_http_client_init(&config);
+
+    if (client == nullptr) {
+        ESP_LOGE("HTTP", "Failed to initialize HTTP client");
+        return;
+    }
+
+    esp_http_client_set_method(
+        client,
+        HTTP_METHOD_POST
+    );
+
+    esp_http_client_set_header(
+        client,
+        "Content-Type",
+        "application/octet-stream"
+    );
+
+    esp_http_client_set_post_field(
+        client,
+        reinterpret_cast<const char *>(all_imu_data),
+        sizeof(all_imu_data)
+    );
+
+    ESP_LOGI(
+        "HTTP",
+        "Sending %u bytes to laptop",
+        sizeof(all_imu_data)
+    );
+
+    esp_err_t err = esp_http_client_perform(client);
+
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(
+            "HTTP",
+            "HTTP status = %d",
+            esp_http_client_get_status_code(client)
+        );
+    }
+    else
+    {
+        ESP_LOGE(
+            "HTTP",
+            "HTTP POST failed: %s",
+            esp_err_to_name(err)
+        );
+    }
+
+    esp_http_client_cleanup(client);
 }
 
 #ifdef DEVICE_PERIPHERAL
@@ -481,16 +549,11 @@ extern "C" void app_main() {
     );
     espnow_init(primary_channel);
 
-    // set send/receive routines
+#endif
 
-    // TODO: if a button is pressed
-    // central device
-    send_start_msg();
-    vTaskDelay(pdMS_TO_TICKS(20));
-
-#else
+#ifdef DEVICE_PERIPHERAL
     // peripheral device
-    uint8_t count, channel = 0;
+    uint8_t count = 0, channel = 0;
     while (channel == 0 && count <= 5) {
         channel = scan_wifi_channel();
         if (channel != 0) {
@@ -522,4 +585,13 @@ extern "C" void app_main() {
         &read_imu_task_handle,
         tskNO_AFFINITY
     );
+
+    // set send/receive routines
+
+#ifdef DEVICE_CENTRAL
+    // TODO: if a button is pressed
+    // central device
+    send_start_msg();
+    vTaskDelay(pdMS_TO_TICKS(20));
+#endif
 }
