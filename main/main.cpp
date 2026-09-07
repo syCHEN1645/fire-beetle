@@ -278,29 +278,6 @@ static void espnow_send_callback(
 }
 #endif
 
-void read_imu_task(void *arg) {
-    if (imu_data_collection_count >= IMU_DATA_LEN) {
-        send_imu_data_to_laptop();
-        imu_data_collection_count = 0;
-        // suspend the data collection process
-        vTaskSuspend(NULL);
-    }
-    
-    esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
-    if (err != ESP_OK) {
-        ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
-    }
-    float imu_data[6];
-    parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
-
-    // preprocess
-    for (int i = 0; i < 6; i++) {
-        all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
-    }
-    imu_data_collection_count++;
-    vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
-}
-
 static void send_imu_data_to_laptop() {
     esp_http_client_config_t config = {};
     config.url = DATA_COLLECT_URL;
@@ -357,6 +334,30 @@ static void send_imu_data_to_laptop() {
 
     esp_http_client_cleanup(client);
 }
+
+void read_imu_task(void *arg) {
+    if (imu_data_collection_count >= IMU_DATA_LEN) {
+        send_imu_data_to_laptop();
+        imu_data_collection_count = 0;
+        // suspend the data collection process
+        vTaskSuspend(NULL);
+    }
+    
+    esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
+    if (err != ESP_OK) {
+        ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+    }
+    float imu_data[6];
+    parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
+
+    // preprocess
+    for (int i = 0; i < 6; i++) {
+        all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
+    }
+    imu_data_collection_count++;
+    vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
+}
+
 
 #ifdef DEVICE_PERIPHERAL
 /// @brief Scan for the Wi-Fi channel of the project Wi-Fi network.
