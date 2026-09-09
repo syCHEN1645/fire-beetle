@@ -1,6 +1,6 @@
 // Choose to define device as central or peripheral
-// #define DEVICE_CENTRAL
-#define DEVICE_PERIPHERAL
+#define DEVICE_CENTRAL
+// #define DEVICE_PERIPHERAL
 
 #if defined(DEVICE_CENTRAL) && defined(DEVICE_PERIPHERAL)
 #error "Defined 2 roles"
@@ -433,56 +433,62 @@ static void send_imu_data_to_laptop() {
 
 void read_imu_task(void *arg) {
     while (true) {
-        if (imu_data_collection_count >= IMU_DATA_LEN) {
-#ifdef DEVICE_CENTRAL
-            send_imu_data_to_laptop();
-#endif
-            imu_data_collection_count = 0;
-            // suspend the data collection process
-            vTaskSuspend(NULL);
-        }
+        // put it to suspension upon creation
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        uint64_t start_time = esp_timer_get_time();
+        imu_data_collection_count = 0;
         
-        esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
-        if (err != ESP_OK) {
-            ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
-        }
-        float imu_data[6];
-        parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
-        
-        ESP_LOGI("IMU", "Collected IMU data:");
+        while (imu_data_collection_count < IMU_DATA_LEN) {
+            esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
+            if (err != ESP_OK) {
+                ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+            }
+            float imu_data[6];
+            parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
+            
+            ESP_LOGI("IMU", "Collected IMU data:");
 
 #ifdef DEVICE_CENTRAL
-        for (int i = 0; i < 6; i++) {
-            all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
-            ESP_LOGI("IMU", "%f", imu_data[i]);
-        }
+            for (int i = 0; i < 6; i++) {
+                all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
+                ESP_LOGI("IMU", "%f", imu_data[i]);
+            }
 #endif
 
 #ifdef DEVICE_PERIPHERAL
-        for (int i = 0; i < 6; i++) {
-            // imu_data_collection[i][imu_data_collection_count] = imu_data[i];
-            ESP_LOGI("IMU", "%f", imu_data[i]);
-        }
-        // send the collected IMU data to the central device via ESP-NOW
-        imu_msg_t imu_msg;
-        imu_msg.accel_x = imu_data[0];
-        imu_msg.accel_y = imu_data[1];
-        imu_msg.accel_z = imu_data[2];
-        imu_msg.gyro_x = imu_data[3];
-        imu_msg.gyro_y = imu_data[4];
-        imu_msg.gyro_z = imu_data[5];
-        imu_msg.index = imu_data_collection_count;
-        esp_err_t result = esp_now_send(
-            central_mac,
-            reinterpret_cast<const uint8_t *>(&imu_msg),
-            sizeof(imu_msg)
-        );
-        if (result != ESP_OK) {
-            ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
-        }
+            for (int i = 0; i < 6; i++) {
+                // imu_data_collection[i][imu_data_collection_count] = imu_data[i];
+                ESP_LOGI("IMU", "%f", imu_data[i]);
+            }
+            // send the collected IMU data to the central device via ESP-NOW
+            imu_msg_t imu_msg;
+            imu_msg.accel_x = imu_data[0];
+            imu_msg.accel_y = imu_data[1];
+            imu_msg.accel_z = imu_data[2];
+            imu_msg.gyro_x = imu_data[3];
+            imu_msg.gyro_y = imu_data[4];
+            imu_msg.gyro_z = imu_data[5];
+            imu_msg.index = imu_data_collection_count;
+            esp_err_t result = esp_now_send(
+                central_mac,
+                reinterpret_cast<const uint8_t *>(&imu_msg),
+                sizeof(imu_msg)
+            );
+            if (result != ESP_OK) {
+                ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
+            }
 #endif
-        imu_data_collection_count++;
-        vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
+            imu_data_collection_count++;
+            vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
+        }
+#ifdef DEVICE_CENTRAL
+        // send only after 3 seconds passed
+        while (esp_timer_get_time() - start_time < SINGLE_ACTION_TIME_MS * 1000) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        send_imu_data_to_laptop();
+#endif
     }
 }
 
@@ -791,7 +797,7 @@ extern "C" void app_main() {
         tskNO_AFFINITY
     );
     // suspend and wait for start signal
-    vTaskSuspend(read_imu_task_handle);
+    // vTaskSuspend(read_imu_task_handle);
 
     // keep main task alive
     while (true)
