@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <algorithm>
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -42,6 +43,8 @@ float accel_rotation[3][3];
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
 
+static TaskHandle_t read_imu_task_handle = NULL;
+
 // Central/Peripheral specific data
 #ifdef DEVICE_CENTRAL
 // Central-specific data
@@ -59,18 +62,6 @@ static const uint8_t RIGHT_UPPER_MAC[] = RIGHT_UPPER_MAC_ADDR;
 
 #endif
 
-// -----------IMU-----------
-
-struct imu_msg_t {
-    float accel_x;
-    float accel_y;
-    float accel_z;
-    float gyro_x;
-    float gyro_y;
-    float gyro_z;
-    int index;
-};
-
 enum class MessageType : uint8_t {
     SYNC = 1,
     START = 2,
@@ -81,6 +72,98 @@ struct ctrl_msg_t {
     uint32_t timestamp;
     uint16_t index;
     MessageType type;
+};
+
+#ifdef DEVICE_CENTRAL
+static void send_ctrl_msg(const ctrl_msg_t &msg) {
+    esp_err_t result = esp_now_send(
+        boardcast_mac,
+        reinterpret_cast<const uint8_t *>(&msg),
+        sizeof(msg)
+    );
+    if (result == ESP_OK) {
+        ESP_LOGI("ESP-NOW", "Control message sent successfully");
+    } else {
+        ESP_LOGE("ESP-NOW", "Failed to send control message");
+    }
+}
+
+static void send_start_msg() {
+    ctrl_msg_t msg;
+    msg.timestamp = xTaskGetTickCount();
+    msg.index = 0;
+    msg.type = MessageType::START;
+    send_ctrl_msg(msg);
+}
+
+#endif
+
+// -----------Button-----------
+#ifdef DEVICE_CENTRAL
+static TaskHandle_t button_task_handle = nullptr;
+
+static void IRAM_ATTR button_isr_handler(void* arg) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    vTaskNotifyGiveFromISR(
+        button_task_handle,
+        &xHigherPriorityTaskWoken
+    );
+    if (xHigherPriorityTaskWoken) {
+        // immediately yield to this higher priority task
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void button_init() {
+    gpio_config_t io_conf{};
+
+    io_conf.pin_bit_mask = 1ULL << START_BUTTON_PIN;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(0)
+    );
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            START_BUTTON_PIN,
+            button_isr_handler,
+            nullptr
+        )
+    );
+}
+
+static void button_task(void* args) {
+    while (true) {
+        // Sleep until button interrupt occurs
+        ulTaskNotifyTake(
+            pdTRUE,
+            portMAX_DELAY
+        );
+
+        ESP_LOGI("BUTTON", "Button pressed");
+        send_start_msg();
+        vTaskResume(read_imu_task_handle);
+    }
+}
+
+#endif
+
+// -----------IMU-----------
+
+struct imu_msg_t {
+    float accel_x;
+    float accel_y;
+    float accel_z;
+    float gyro_x;
+    float gyro_y;
+    float gyro_z;
+    int index;
 };
 
 void data_collection_callback(i2c_master_dev_handle_t dev_handle) {
@@ -259,26 +342,6 @@ static void espnow_send_callback(
     }
 }
 
-static void send_ctrl_msg(const ctrl_msg_t &msg) {
-    esp_err_t result = esp_now_send(
-        boardcast_mac,
-        reinterpret_cast<const uint8_t *>(&msg),
-        sizeof(msg)
-    );
-    if (result == ESP_OK) {
-        ESP_LOGI("ESP-NOW", "Control message sent successfully");
-    } else {
-        ESP_LOGE("ESP-NOW", "Failed to send control message");
-    }
-}
-
-static void send_start_msg() {
-    ctrl_msg_t msg;
-    msg.timestamp = xTaskGetTickCount();
-    msg.index = 0;
-    msg.type = MessageType::START;
-    send_ctrl_msg(msg);
-}
 
 #endif
 
@@ -327,8 +390,7 @@ static void espnow_send_callback(
 
 static void send_imu_data_to_laptop() {
     esp_http_client_config_t config = {};
-    // config.url = DATA_COLLECT_URL;
-    config.url = "http://172.20.10.2:5000/imu";
+    config.url = DATA_COLLECT_URL;
 
     esp_http_client_handle_t client =
         esp_http_client_init(&config);
@@ -560,6 +622,7 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
 
     // debug
+    vTaskDelay(100 / portTICK_PERIOD_MS);
     esp_err_t ret = i2c_master_probe(
         *bus_handle,
         LSM6DSOX_I2C_ADDR,
@@ -680,8 +743,24 @@ extern "C" void app_main() {
     espnow_init(channel);
 
 #endif
+
+#ifdef DEVICE_CENTRAL
+
+    xTaskCreate(
+        button_task,
+        "Button Task",
+        4096,
+        nullptr,
+        5,
+        &button_task_handle
+    );
+
+    button_init();
+
+#endif
+
     // all firebeetles should have the task to read its own imu
-    static TaskHandle_t read_imu_task_handle = NULL;
+    
     xTaskCreatePinnedToCore(
         read_imu_task,
         "Read IMU Task",
@@ -691,13 +770,12 @@ extern "C" void app_main() {
         &read_imu_task_handle,
         tskNO_AFFINITY
     );
+    // suspend and wait for start signal
+    vTaskSuspend(read_imu_task_handle);
 
-    // set send/receive routines
-
-#ifdef DEVICE_CENTRAL
-    // TODO: if a button is pressed
-    // central device
-    send_start_msg();
-    vTaskDelay(pdMS_TO_TICKS(20));
-#endif
+    // keep main task alive
+    while (true)
+    {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

@@ -2,6 +2,7 @@
 #define HW_CONFIG_H
 
 #define LED_PIN 13
+#define START_BUTTON_PIN GPIO_NUM_2
 #define I2C_SDA_PIN GPIO_NUM_21
 #define I2C_SCL_PIN GPIO_NUM_22
 #define I2C_PORT I2C_NUM_0
