@@ -1,6 +1,6 @@
 // Choose to define device as central or peripheral
-#define DEVICE_CENTRAL
-// #define DEVICE_PERIPHERAL
+// #define DEVICE_CENTRAL
+#define DEVICE_PERIPHERAL
 
 #if defined(DEVICE_CENTRAL) && defined(DEVICE_PERIPHERAL)
 #error "Defined 2 roles"
@@ -32,8 +32,6 @@
 
 // IMU data buffers
 uint8_t imu_data_buffer[12];
-float imu_data_collection[6][IMU_DATA_LEN];
-float all_imu_data[4][6][IMU_DATA_LEN];
 uint16_t imu_data_collection_count = 0;
 // IMU zero calibration data (double to avoid integer division)
 float imu_zero_calibration[6];
@@ -55,10 +53,13 @@ static const uint8_t LEFT_UPPER_MAC[]  = LEFT_UPPER_MAC_ADDR;
 static const uint8_t RIGHT_LOWER_MAC[] = RIGHT_LOWER_MAC_ADDR;
 static const uint8_t RIGHT_UPPER_MAC[] = RIGHT_UPPER_MAC_ADDR;
 
+float all_imu_data[4][6][IMU_DATA_LEN];
+
 #endif
 
 #ifdef DEVICE_PERIPHERAL
 // Peripheral-specific data
+static uint8_t central_mac[] = CENTRAL_MAC_ADDR;
 
 #endif
 
@@ -166,27 +167,8 @@ struct imu_msg_t {
     int index;
 };
 
-void data_collection_callback(i2c_master_dev_handle_t dev_handle) {
-    float imu_data[6];
-    read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
-    parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
-
-    // add parsed data to collection buffer
-    for (int i = 0; i < 6; i++) {
-        imu_data_collection[i][imu_data_collection_count] = imu_data[i];
-    }
-    imu_data_collection_count++;
-    if (imu_data_collection_count >= IMU_DATA_LEN) {
-        imu_data_collection_count = 0;
-    }
-
-    if (imu_data_collection_count == 0) {
-        // now the collection buffer is full, start processing the collected data here.
-        preprocess_lsm6dsox_imu_data();
-    }
-}
-
 // ----------------ESP-NOW----------------
+#ifdef DEVICE_CENTRAL
 static void wifi_event_handler(
     void *arg,
     esp_event_base_t event_base,
@@ -218,6 +200,8 @@ static void wifi_event_handler(
         );
     }
 }
+
+#endif
 
 static void wifi_init() {
     ESP_ERROR_CHECK(esp_netif_init());
@@ -253,8 +237,6 @@ static void wifi_init() {
         )
     );
 
-#endif
-
     ESP_ERROR_CHECK(
         esp_event_handler_register(
             IP_EVENT,
@@ -263,15 +245,14 @@ static void wifi_init() {
             nullptr
         )
     );
+#endif
 
     ESP_ERROR_CHECK(esp_wifi_start());
 
 #ifdef DEVICE_CENTRAL
-
     ESP_ERROR_CHECK(esp_wifi_connect());
     // delay to ensure connection is established
     // vTaskDelay(1000 / portTICK_PERIOD_MS);
-
 #endif
 }
 
@@ -285,6 +266,8 @@ static void espnow_receive_callback(
     imu_msg_t imu_msg;
     if (len == sizeof(imu_msg_t)) {
         memcpy(&imu_msg, data, sizeof(imu_msg_t));
+    } else {
+        return;
     }
 
     if (imu_msg.index >= IMU_DATA_LEN) {
@@ -342,7 +325,6 @@ static void espnow_send_callback(
     }
 }
 
-
 #endif
 
 #ifdef DEVICE_PERIPHERAL
@@ -351,13 +333,13 @@ static void handle_control_message(const ctrl_msg_t& msg) {
     switch (msg.type)
     {
         case MessageType::START:
-            collecting = true;
             ESP_LOGI("RECV", "START received");
+            vTaskResume(read_imu_task_handle);
             break;
 
         case MessageType::END:
-            collecting = false;
             ESP_LOGI("RECV", "END received");
+            vTaskSuspend(read_imu_task_handle);
             break;
 
         case MessageType::SYNC:
@@ -370,11 +352,12 @@ static void espnow_receive_callback(
     const esp_now_recv_info_t *recv_info,
     const uint8_t *data,
     int len) {
-    if (len == sizeof(ctrl_msg_t)) {
-        ctrl_msg_t msg;
-        memcpy(&msg, data, sizeof(ctrl_msg_t));
-        handle_control_message(msg);
+    if (len != sizeof(ctrl_msg_t)) {
+        return;
     }
+    ctrl_msg_t msg;
+    memcpy(&msg, data, sizeof(ctrl_msg_t));
+    handle_control_message(msg);
 }
 
 static void espnow_send_callback(
@@ -388,6 +371,7 @@ static void espnow_send_callback(
 }
 #endif
 
+#ifdef DEVICE_CENTRAL
 static void send_imu_data_to_laptop() {
     esp_http_client_config_t config = {};
     config.url = DATA_COLLECT_URL;
@@ -445,10 +429,14 @@ static void send_imu_data_to_laptop() {
     esp_http_client_cleanup(client);
 }
 
+#endif
+
 void read_imu_task(void *arg) {
     while (true) {
         if (imu_data_collection_count >= IMU_DATA_LEN) {
+#ifdef DEVICE_CENTRAL
             send_imu_data_to_laptop();
+#endif
             imu_data_collection_count = 0;
             // suspend the data collection process
             vTaskSuspend(NULL);
@@ -460,13 +448,39 @@ void read_imu_task(void *arg) {
         }
         float imu_data[6];
         parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
-
-        // preprocess
+        
         ESP_LOGI("IMU", "Collected IMU data:");
+
+#ifdef DEVICE_CENTRAL
         for (int i = 0; i < 6; i++) {
             all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
             ESP_LOGI("IMU", "%f", imu_data[i]);
         }
+#endif
+
+#ifdef DEVICE_PERIPHERAL
+        for (int i = 0; i < 6; i++) {
+            // imu_data_collection[i][imu_data_collection_count] = imu_data[i];
+            ESP_LOGI("IMU", "%f", imu_data[i]);
+        }
+        // send the collected IMU data to the central device via ESP-NOW
+        imu_msg_t imu_msg;
+        imu_msg.accel_x = imu_data[0];
+        imu_msg.accel_y = imu_data[1];
+        imu_msg.accel_z = imu_data[2];
+        imu_msg.gyro_x = imu_data[3];
+        imu_msg.gyro_y = imu_data[4];
+        imu_msg.gyro_z = imu_data[5];
+        imu_msg.index = imu_data_collection_count;
+        esp_err_t result = esp_now_send(
+            central_mac,
+            reinterpret_cast<const uint8_t *>(&imu_msg),
+            sizeof(imu_msg)
+        );
+        if (result != ESP_OK) {
+            ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
+        }
+#endif
         imu_data_collection_count++;
         vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
     }
@@ -572,10 +586,17 @@ static void espnow_init(uint8_t channel = 0) {
 
 #ifdef DEVICE_PERIPHERAL
     // Peripheral sends IMU data to the central device.
+    ESP_ERROR_CHECK(
+        esp_wifi_set_channel(
+            channel,
+            WIFI_SECOND_CHAN_NONE
+        )
+    );
+
     esp_now_peer_info_t peer_info{};
     memcpy(
         peer_info.peer_addr,
-        CENTRAL_MAC_ADDR,
+        central_mac,
         ESP_NOW_ETH_ALEN
     );
     peer_info.channel = channel;
@@ -679,8 +700,7 @@ extern "C" void app_main() {
     if (sta_netif == nullptr) {
         ESP_LOGE("WIFI", "STA netif not found");
     } else {
-        esp_err_t err =
-            esp_netif_get_ip_info(sta_netif, &ip_info);
+        esp_err_t err = esp_netif_get_ip_info(sta_netif, &ip_info);
 
         if (err == ESP_OK) {
             ESP_LOGI(
@@ -739,7 +759,7 @@ extern "C" void app_main() {
         return;
     }
 
-    LOGI("WIFI", "Scanned Wi-Fi channel: %u", channel);
+    ESP_LOGI("WIFI", "Scanned Wi-Fi channel: %u", channel);
     espnow_init(channel);
 
 #endif

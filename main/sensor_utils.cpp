@@ -7,6 +7,9 @@
 #include "hw_config.h"
 #include "sensor_utils.h"
 
+/// @brief Sets the configuration of the LSM6DSOX IMU sensor via I2C.
+/// @param dev_handle 
+/// @return 
 esp_err_t set_lsm6dsox_imu_config(i2c_master_dev_handle_t dev_handle) {
     uint8_t accel_config[2] = {0x10, 0x20};
     uint8_t gyro_config[2] = {0x11, 0x20};
@@ -40,7 +43,6 @@ esp_err_t set_lsm6dsox_imu_config(i2c_master_dev_handle_t dev_handle) {
     ESP_LOGI("IMU", "LSM6DSOX initialized");
     return ESP_OK;
 }
-
 
 /// @brief Reads from I2C sensor, writes into i2c_buffer.
 /// @param dev_handle The I2C device handle for the sensor.
@@ -138,11 +140,15 @@ float get_median(float *data, size_t size) {
     return median;
 }
 
-void median_smooth_lsm6dsox_collection(void) {
-    for (int i = 2; i < 312; i++) {
+/// @brief For each data, smooths the data using a median filter with a window size of 3.
+/// @param imu_data Pointer to the 2D array of IMU data to be smoothed.
+void median_smooth_lsm6dsox_collection(float imu_data[6][IMU_DATA_LEN]) {
+    float imu_copy[6][IMU_DATA_LEN];
+    memcpy(imu_copy, imu_data, sizeof(imu_copy));
+    for (int i = 2; i < IMU_DATA_LEN; i++) {
         for (int j = 0; j < 6; j++) {
-            float temp[3] = {imu_data_collection[j][i-2], imu_data_collection[j][i-1], imu_data_collection[j][i]};
-            imu_data_collection[j][i] = get_median(temp, sizeof(temp)/sizeof(temp[0]));
+            float temp[3] = {imu_copy[j][i-2], imu_copy[j][i-1], imu_copy[j][i]};
+            imu_data[j][i] = get_median(temp, sizeof(temp)/sizeof(temp[0]));
         }
     }
 }
