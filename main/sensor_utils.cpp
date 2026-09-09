@@ -7,6 +7,40 @@
 #include "hw_config.h"
 #include "sensor_utils.h"
 
+esp_err_t set_lsm6dsox_imu_config(i2c_master_dev_handle_t dev_handle) {
+    uint8_t accel_config[2] = {0x10, 0x20};
+    uint8_t gyro_config[2] = {0x11, 0x20};
+
+    esp_err_t ret = i2c_master_transmit(
+        dev_handle,
+        accel_config,
+        sizeof(accel_config),
+        1000
+    );
+
+    if (ret != ESP_OK) {
+        ESP_LOGE("IMU", "Failed to configure accelerometer: %s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = i2c_master_transmit(
+        dev_handle,
+        gyro_config,
+        sizeof(gyro_config),
+        1000
+    );
+
+    if (ret != ESP_OK) {
+        ESP_LOGE("IMU", "Failed to configure gyroscope: %s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI("IMU", "LSM6DSOX initialized");
+    return ESP_OK;
+}
+
 
 /// @brief Reads from I2C sensor, writes into i2c_buffer.
 /// @param dev_handle The I2C device handle for the sensor.
@@ -15,6 +49,21 @@
 /// @return ESP_OK if the read was successful.
 esp_err_t read_from_lsm6dsox_imu(i2c_master_dev_handle_t dev_handle, uint8_t *recv_buffer, size_t recv_len) {
     uint8_t reg_addr = LSM6DSOX_LOW_ADDR_GYRO;
+
+    // debug
+    // uint8_t reg = 0x0F;
+    // uint8_t who_am_i = 0;
+
+    // esp_err_t r = i2c_master_transmit_receive(
+    //     dev_handle,
+    //     &reg,
+    //     1,
+    //     &who_am_i,
+    //     1,
+    //     1000
+    // );
+
+    // ESP_LOGI("IMU", "WHO_AM_I = 0x%02X", who_am_i);
     
     // timeout -1 to wait forever
     esp_err_t ret = i2c_master_transmit_receive(
@@ -38,12 +87,13 @@ esp_err_t read_from_lsm6dsox_imu(i2c_master_dev_handle_t dev_handle, uint8_t *re
 /// @param imu_data Array to store the parsed IMU data: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z.
 /// @return None
 void parse_lsm6dsox_imu_data(uint8_t bytes_buffer[12], float raw_buffer[6]) {
-    raw_buffer[0] = (float)(((uint16_t)bytes_buffer[1] << 8) | bytes_buffer[0]);
-    raw_buffer[1] = (float)(((uint16_t)bytes_buffer[3] << 8) | bytes_buffer[2]);
-    raw_buffer[2] = (float)(((uint16_t)bytes_buffer[5] << 8) | bytes_buffer[4]);
-    raw_buffer[3] = (float)(((uint16_t)bytes_buffer[7] << 8) | bytes_buffer[6]);
-    raw_buffer[4] = (float)(((uint16_t)bytes_buffer[9] << 8) | bytes_buffer[8]);
-    raw_buffer[5] = (float)(((uint16_t)bytes_buffer[11] << 8) | bytes_buffer[10]);
+    // cast to int16_t to preserve sign
+    raw_buffer[0] = (float)(int16_t)(((uint16_t)bytes_buffer[1] << 8) | bytes_buffer[0]);
+    raw_buffer[1] = (float)(int16_t)(((uint16_t)bytes_buffer[3] << 8) | bytes_buffer[2]);
+    raw_buffer[2] = (float)(int16_t)(((uint16_t)bytes_buffer[5] << 8) | bytes_buffer[4]);
+    raw_buffer[3] = (float)(int16_t)(((uint16_t)bytes_buffer[7] << 8) | bytes_buffer[6]);
+    raw_buffer[4] = (float)(int16_t)(((uint16_t)bytes_buffer[9] << 8) | bytes_buffer[8]);
+    raw_buffer[5] = (float)(int16_t)(((uint16_t)bytes_buffer[11] << 8) | bytes_buffer[10]);
     // reset bytes_buffer after parsing
     for (int i = 0; i < 12; i++) {
         bytes_buffer[i] = 0;

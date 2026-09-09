@@ -104,9 +104,47 @@ void data_collection_callback(i2c_master_dev_handle_t dev_handle) {
 }
 
 // ----------------ESP-NOW----------------
+static void wifi_event_handler(
+    void *arg,
+    esp_event_base_t event_base,
+    int32_t event_id,
+    void *event_data)
+{
+    if (event_base == IP_EVENT &&
+        event_id == IP_EVENT_STA_GOT_IP)
+    {
+        ip_event_got_ip_t *event =
+            static_cast<ip_event_got_ip_t *>(event_data);
+
+        ESP_LOGI(
+            "WIFI",
+            "ESP IP: " IPSTR,
+            IP2STR(&event->ip_info.ip)
+        );
+
+        ESP_LOGI(
+            "WIFI",
+            "Gateway: " IPSTR,
+            IP2STR(&event->ip_info.gw)
+        );
+
+        ESP_LOGI(
+            "WIFI",
+            "Netmask: " IPSTR,
+            IP2STR(&event->ip_info.netmask)
+        );
+    }
+}
+
 static void wifi_init() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+#ifdef DEVICE_CENTRAL
+    // creates the TCP/IP network interface associated with the ESP32's Wi-Fi station
+    // needed to use wifi comms like http, not needed for esp-now
+    esp_netif_create_default_wifi_sta();
+#endif
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -133,6 +171,15 @@ static void wifi_init() {
     );
 
 #endif
+
+    ESP_ERROR_CHECK(
+        esp_event_handler_register(
+            IP_EVENT,
+            IP_EVENT_STA_GOT_IP,
+            &wifi_event_handler,
+            nullptr
+        )
+    );
 
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -280,7 +327,8 @@ static void espnow_send_callback(
 
 static void send_imu_data_to_laptop() {
     esp_http_client_config_t config = {};
-    config.url = DATA_COLLECT_URL;
+    // config.url = DATA_COLLECT_URL;
+    config.url = "http://172.20.10.2:5000/imu";
 
     esp_http_client_handle_t client =
         esp_http_client_init(&config);
@@ -336,26 +384,30 @@ static void send_imu_data_to_laptop() {
 }
 
 void read_imu_task(void *arg) {
-    if (imu_data_collection_count >= IMU_DATA_LEN) {
-        send_imu_data_to_laptop();
-        imu_data_collection_count = 0;
-        // suspend the data collection process
-        vTaskSuspend(NULL);
-    }
-    
-    esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
-    if (err != ESP_OK) {
-        ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
-    }
-    float imu_data[6];
-    parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
+    while (true) {
+        if (imu_data_collection_count >= IMU_DATA_LEN) {
+            send_imu_data_to_laptop();
+            imu_data_collection_count = 0;
+            // suspend the data collection process
+            vTaskSuspend(NULL);
+        }
+        
+        esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
+        if (err != ESP_OK) {
+            ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+        }
+        float imu_data[6];
+        parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
 
-    // preprocess
-    for (int i = 0; i < 6; i++) {
-        all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
+        // preprocess
+        ESP_LOGI("IMU", "Collected IMU data:");
+        for (int i = 0; i < 6; i++) {
+            all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
+            ESP_LOGI("IMU", "%f", imu_data[i]);
+        }
+        imu_data_collection_count++;
+        vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
     }
-    imu_data_collection_count++;
-    vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
 }
 
 
@@ -486,17 +538,35 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
         .sda_io_num = I2C_SDA_PIN,
         .scl_io_num = I2C_SCL_PIN,
         .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7
+        .glitch_ignore_cnt = 7,
+        .intr_priority = 0,
+        .trans_queue_depth = 0,
+        .flags = {
+            .enable_internal_pullup = true,
+            .allow_pd = false,
+        },
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, bus_handle));
 
     i2c_device_config_t dev_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = LSM6DSOX_LOW_ADDR_GYRO,
+        .device_address = LSM6DSOX_I2C_ADDR,
         .scl_speed_hz = I2C_CLK_FREQ_HZ,
-        .scl_wait_us = 0
+        .scl_wait_us = 0,
+        .flags = {
+            .disable_ack_check = false,
+        },
     };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
+
+    // debug
+    esp_err_t ret = i2c_master_probe(
+        *bus_handle,
+        LSM6DSOX_I2C_ADDR,
+        1000
+    );
+
+    ESP_LOGI("I2C", "LSM6DSOX probe: %s", esp_err_to_name(ret));
 
     ESP_LOGI("I2C", "I2C master initialized successfully");
 }
@@ -509,7 +579,6 @@ void display_mac_address() {
     ESP_ERROR_CHECK(
         esp_wifi_get_mac(WIFI_IF_STA, mac)
     );
-
     ESP_LOGI(
         "MAC",
         "MAC: %02X:%02X:%02X:%02X:%02X:%02X",
@@ -523,6 +592,8 @@ extern "C" void app_main() {
 
     i2c_master_init(&bus_handle, &dev_handle);
 
+    set_lsm6dsox_imu_config(dev_handle);
+
     esp_err_t ret = nvs_flash_init();
     // reinitialize NVS if necessary
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -534,7 +605,41 @@ extern "C" void app_main() {
     // start wifi and esp-now
     wifi_init();
     vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // debug
     display_mac_address();
+    esp_netif_t *sta_netif =
+        esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    esp_netif_ip_info_t ip_info{};
+
+    if (sta_netif == nullptr) {
+        ESP_LOGE("WIFI", "STA netif not found");
+    } else {
+        esp_err_t err =
+            esp_netif_get_ip_info(sta_netif, &ip_info);
+
+        if (err == ESP_OK) {
+            ESP_LOGI(
+                "WIFI",
+                "ESP IP: " IPSTR,
+                IP2STR(&ip_info.ip)
+            );
+
+            ESP_LOGI(
+                "WIFI",
+                "Gateway: " IPSTR,
+                IP2STR(&ip_info.gw)
+            );
+
+            ESP_LOGI(
+                "WIFI",
+                "Netmask: " IPSTR,
+                IP2STR(&ip_info.netmask)
+            );
+        }
+    }
+
     
 #ifdef DEVICE_CENTRAL
     // get actual wifi channel
