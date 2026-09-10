@@ -1,6 +1,6 @@
 // Choose to define device as central or peripheral
-#define DEVICE_CENTRAL
-// #define DEVICE_PERIPHERAL
+// #define DEVICE_CENTRAL
+#define DEVICE_PERIPHERAL
 
 #if defined(DEVICE_CENTRAL) && defined(DEVICE_PERIPHERAL)
 #error "Defined 2 roles"
@@ -42,6 +42,7 @@ i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
 
 static TaskHandle_t read_imu_task_handle = NULL;
+static TaskHandle_t calibration_task_handle = NULL;
 
 // Central/Peripheral specific data
 #ifdef DEVICE_CENTRAL
@@ -66,7 +67,7 @@ static uint8_t central_mac[] = CENTRAL_MAC_ADDR;
 enum class MessageType : uint8_t {
     SYNC = 1,
     START = 2,
-    END = 3
+    CALI = 3
 };
 
 struct ctrl_msg_t {
@@ -97,16 +98,37 @@ static void send_start_msg() {
     send_ctrl_msg(msg);
 }
 
+static void send_cali_msg() {
+    ctrl_msg_t msg;
+    msg.timestamp = xTaskGetTickCount();
+    msg.index = 0;
+    msg.type = MessageType::CALI;
+    send_ctrl_msg(msg);
+}
+
 #endif
 
 // -----------Button-----------
 #ifdef DEVICE_CENTRAL
-static TaskHandle_t button_task_handle = nullptr;
+static TaskHandle_t start_button_task_handle = nullptr;
+static TaskHandle_t cali_button_task_handle = nullptr;
 
-static void IRAM_ATTR button_isr_handler(void* arg) {
+static void IRAM_ATTR start_button_isr(void* arg) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     vTaskNotifyGiveFromISR(
-        button_task_handle,
+        start_button_task_handle,
+        &xHigherPriorityTaskWoken
+    );
+    if (xHigherPriorityTaskWoken) {
+        // immediately yield to this higher priority task
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void IRAM_ATTR cali_button_isr(void* arg) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    vTaskNotifyGiveFromISR(
+        cali_button_task_handle,
         &xHigherPriorityTaskWoken
     );
     if (xHigherPriorityTaskWoken) {
@@ -118,7 +140,7 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
 static void button_init() {
     gpio_config_t io_conf{};
 
-    io_conf.pin_bit_mask = 1ULL << START_BUTTON_PIN;
+    io_conf.pin_bit_mask = (1ULL << START_BUTTON_PIN) | (1ULL << CALI_BUTTON_PIN);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -133,13 +155,21 @@ static void button_init() {
     ESP_ERROR_CHECK(
         gpio_isr_handler_add(
             START_BUTTON_PIN,
-            button_isr_handler,
+            start_button_isr,
+            nullptr
+        )
+    );
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            CALI_BUTTON_PIN,
+            cali_button_isr,
             nullptr
         )
     );
 }
 
-static void button_task(void* args) {
+static void start_button_task(void* args) {
     while (true) {
         // Sleep until button interrupt occurs
         ulTaskNotifyTake(
@@ -147,9 +177,23 @@ static void button_task(void* args) {
             portMAX_DELAY
         );
 
-        ESP_LOGI("BUTTON", "Button pressed");
+        ESP_LOGI("BUTTON", "Start button pressed");
         send_start_msg();
-        vTaskResume(read_imu_task_handle);
+        xTaskNotifyGive(read_imu_task_handle);
+    }
+}
+
+static void cali_button_task(void* args) {
+    while (true) {
+        // Sleep until button interrupt occurs
+        ulTaskNotifyTake(
+            pdTRUE,
+            portMAX_DELAY
+        );
+
+        ESP_LOGI("BUTTON", "Calibration button pressed");
+        send_cali_msg();
+        xTaskNotifyGive(calibration_task_handle);
     }
 }
 
@@ -334,12 +378,12 @@ static void handle_control_message(const ctrl_msg_t& msg) {
     {
         case MessageType::START:
             ESP_LOGI("RECV", "START received");
-            vTaskResume(read_imu_task_handle);
+            xTaskNotifyGive(read_imu_task_handle);
             break;
 
-        case MessageType::END:
-            ESP_LOGI("RECV", "END received");
-            vTaskSuspend(read_imu_task_handle);
+        case MessageType::CALI:
+            ESP_LOGI("RECV", "CALI received");
+            xTaskNotifyGive(calibration_task_handle);
             break;
 
         case MessageType::SYNC:
@@ -445,6 +489,7 @@ void read_imu_task(void *arg) {
             }
             float imu_data[6];
             parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
+            zero_calibrate_lsm6dsox_imu_data(imu_data);
             
             ESP_LOGI("IMU", "Collected IMU data:");
 
@@ -487,8 +532,26 @@ void read_imu_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
         vTaskDelay(pdMS_TO_TICKS(100));
+        // TODO: use semaphore to lock the array to stop late transmissions
+        for (int i = 0; i < 4; i++) {
+            median_smooth_lsm6dsox_imu_data(all_imu_data[i]);
+        }
         send_imu_data_to_laptop();
 #endif
+    }
+}
+
+void calibration_task(void *arg) {
+    while (true) {
+        // put it to suspension upon creation
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ESP_LOGI("CALIBRATION", "Starting zero calibration");
+        get_lsm6dsox_zero_calibration(dev_handle);
+        ESP_LOGI("CALIBRATION", "Zero calibration completed");
+        ESP_LOGI("CALIBRATION", "Gyro offsets: %f, %f, %f", gyro_offset[0], gyro_offset[1], gyro_offset[2]);
+        ESP_LOGI("CALIBRATION", "Accel rotation: %f, %f, %f", accel_rotation[0][0], accel_rotation[0][1], accel_rotation[0][2]);
+        ESP_LOGI("CALIBRATION", "Accel rotation: %f, %f, %f", accel_rotation[1][0], accel_rotation[1][1], accel_rotation[1][2]);
+        ESP_LOGI("CALIBRATION", "Accel rotation: %f, %f, %f", accel_rotation[2][0], accel_rotation[2][1], accel_rotation[2][2]);
     }
 }
 
@@ -773,12 +836,20 @@ extern "C" void app_main() {
 #ifdef DEVICE_CENTRAL
 
     xTaskCreate(
-        button_task,
-        "Button Task",
+        start_button_task,
+        "Start Button Task",
         4096,
         nullptr,
         5,
-        &button_task_handle
+        &start_button_task_handle
+    );
+    xTaskCreate(
+        cali_button_task,
+        "Calibration Button Task",
+        4096,
+        nullptr,
+        5,
+        &cali_button_task_handle
     );
 
     button_init();
@@ -796,8 +867,16 @@ extern "C" void app_main() {
         &read_imu_task_handle,
         tskNO_AFFINITY
     );
-    // suspend and wait for start signal
-    // vTaskSuspend(read_imu_task_handle);
+
+    xTaskCreatePinnedToCore(
+        calibration_task,
+        "Calibration Task",
+        4096,
+        NULL,
+        5,
+        &calibration_task_handle,
+        tskNO_AFFINITY
+    );
 
     // keep main task alive
     while (true)

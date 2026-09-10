@@ -1,10 +1,12 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include "sensor_utils.h"
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include <algorithm>
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-#include "hw_config.h"
 #include "sensor_utils.h"
 
 /// @brief Sets the configuration of the LSM6DSOX IMU sensor via I2C.
@@ -109,8 +111,8 @@ void preprocess_lsm6dsox_imu_data(void) {
 
 
 /// @brief Performs zero calibration on 1 piece of IMU data. Gyro minus offset. Accel dot by R matrix. 
-/// @param None
-void zero_calibrate_lsm6dsox_collection(float imu_data[6]) {
+/// @param imu_data Array containing the IMU data: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z.
+void zero_calibrate_lsm6dsox_imu_data (float imu_data[6]) {
     imu_data[3] -= gyro_offset[0];
     imu_data[4] -= gyro_offset[1];
     imu_data[5] -= gyro_offset[2];
@@ -142,7 +144,7 @@ float get_median(float *data, size_t size) {
 
 /// @brief For each data, smooths the data using a median filter with a window size of 3.
 /// @param imu_data Pointer to the 2D array of IMU data to be smoothed.
-void median_smooth_lsm6dsox_collection(float imu_data[6][IMU_DATA_LEN]) {
+void median_smooth_lsm6dsox_imu_data(float imu_data[6][IMU_DATA_LEN]) {
     float imu_copy[6][IMU_DATA_LEN];
     memcpy(imu_copy, imu_data, sizeof(imu_copy));
     for (int i = 2; i < IMU_DATA_LEN; i++) {
@@ -159,8 +161,7 @@ void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle) {
     size_t count = 0;
 
     // In an interval of 3 seconds, collect multiple IMU readings and compute the average
-    uint64_t start_time = esp_timer_get_time();
-    while (esp_timer_get_time() < start_time + 3000000) {
+    while (count < IMU_DATA_LEN) {
         uint8_t bytes_buffer[12];
         float raw_buffer[6];
         read_from_lsm6dsox_imu(dev_handle, bytes_buffer, sizeof(bytes_buffer));
@@ -170,7 +171,9 @@ void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle) {
             calibration_data[i] += raw_buffer[i];
         }
         count++;
+        vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
     }
+    ESP_LOGI("IMU", "Collected %d samples for zero calibration", count);
 
     // set zero calibration values to be the mean of collected data
     if (count > 0) {
@@ -205,16 +208,22 @@ void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle) {
     v[2] = 0;
     float v_magnitude = sqrt(v[0] * v[0] + v[1] * v[1]);
     if (v_magnitude < 1e-6) {
-        // meaning it is already aligned with z-axis, R = I
         accel_rotation[0][0] = 1.0f;
         accel_rotation[0][1] = 0.0f; 
         accel_rotation[0][2] = 0.0f;
         accel_rotation[1][0] = 0.0f; 
-        accel_rotation[1][1] = 1.0f;
         accel_rotation[1][2] = 0.0f;
         accel_rotation[2][0] = 0.0f; 
-        accel_rotation[2][1] = 0.0f; 
-        accel_rotation[2][2] = 1.0f;
+        accel_rotation[2][1] = 0.0f;
+        if (a[2] > 0) {
+            // meaning it is already aligned with z-axis, R = I
+            accel_rotation[1][1] = 1.0f;
+            accel_rotation[2][2] = 1.0f;
+        } else {
+            // meaning it is aligned with -z-axis, R = diag(1, -1, -1)
+            accel_rotation[1][1] = -1.0f;
+            accel_rotation[2][2] = -1.0f;
+        }
         return;
     }
 
