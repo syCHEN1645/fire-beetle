@@ -1,6 +1,6 @@
 // Choose to define device as central or peripheral
-// #define DEVICE_CENTRAL
-#define DEVICE_PERIPHERAL
+#define DEVICE_CENTRAL
+// #define DEVICE_PERIPHERAL
 
 #if defined(DEVICE_CENTRAL) && defined(DEVICE_PERIPHERAL)
 #error "Defined 2 roles"
@@ -142,7 +142,7 @@ static void button_init() {
 
     io_conf.pin_bit_mask = (1ULL << START_BUTTON_PIN) | (1ULL << CALI_BUTTON_PIN);
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.intr_type = GPIO_INTR_NEGEDGE;
 

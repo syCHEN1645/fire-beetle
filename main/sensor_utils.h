@@ -22,7 +22,6 @@ extern float accel_rotation[3][3];
 esp_err_t set_lsm6dsox_imu_config(i2c_master_dev_handle_t dev_handle);
 esp_err_t read_from_lsm6dsox_imu(i2c_master_dev_handle_t dev_handle, uint8_t *recv_buffer, size_t recv_len);
 void parse_lsm6dsox_imu_data(uint8_t bytes_buffer[12], float raw_buffer[6]);
-void preprocess_lsm6dsox_imu_data(void);
 void zero_calibrate_lsm6dsox_imu_data(float imu_data[6]);
 float get_median(float *data, size_t size);
 void median_smooth_lsm6dsox_imu_data(float imu_data[6][IMU_DATA_LEN]);
