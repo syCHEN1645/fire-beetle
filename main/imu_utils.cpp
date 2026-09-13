@@ -1,4 +1,4 @@
-#include "sensor_utils.h"
+#include "imu_utils.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -6,8 +6,6 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-#include "sensor_utils.h"
 
 /// @brief Sets the configuration of the LSM6DSOX IMU sensor via I2C.
 /// @param dev_handle 
