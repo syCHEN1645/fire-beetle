@@ -38,36 +38,49 @@ float accel_rotation[3][3];
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
 
+static TaskHandle_t fsm_task_handle = NULL;
 static TaskHandle_t read_imu_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
 
-// -----------Button-----------
 #ifdef DEVICE_CENTRAL
-static TaskHandle_t start_button_task_handle = nullptr;
-static TaskHandle_t cali_button_task_handle = nullptr;
+typedef enum {
+    SE_EXTA,
+    SE_EXTB,
+    SE_EXTC,
+    SE_EXTD,
+    SE_EXTE,
+    SE_INIT_READY,
+    SE_ERROR,
+} system_event_t;
 
-static void IRAM_ATTR start_button_isr(void* arg) {
+typedef enum {
+    SS_STARTUP,
+    SS_IDLE,
+    SS_SESSION,
+    SS_ERROR,
+    SS_MENU,
+} system_state_t;
+
+// -----------Event Queue-----------
+static QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
+static system_state_t current_state = SS_STARTUP;
+
+
+/// @brief Push an event to the event queue from an ISR.
+/// @param e The event to be pushed.
+/// @note This function will be called from an ISR context, do not call ESP_LOG inside.
+static void push_event(system_event_t e) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    vTaskNotifyGiveFromISR(
-        start_button_task_handle,
-        &xHigherPriorityTaskWoken
-    );
-    if (xHigherPriorityTaskWoken) {
-        // immediately yield to this higher priority task
-        portYIELD_FROM_ISR();
-    }
+    xQueueSendFromISR(event_queue, &e, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-static void IRAM_ATTR cali_button_isr(void* arg) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    vTaskNotifyGiveFromISR(
-        cali_button_task_handle,
-        &xHigherPriorityTaskWoken
-    );
-    if (xHigherPriorityTaskWoken) {
-        // immediately yield to this higher priority task
-        portYIELD_FROM_ISR();
-    }
+static void IRAM_ATTR button_a_isr(void* arg) {
+    push_event(SE_EXTA);
+}
+
+static void IRAM_ATTR button_b_isr(void* arg) {
+    push_event(SE_EXTB);
 }
 
 static void button_init() {
@@ -88,7 +101,7 @@ static void button_init() {
     ESP_ERROR_CHECK(
         gpio_isr_handler_add(
             START_BUTTON_PIN,
-            start_button_isr,
+            button_a_isr,
             nullptr
         )
     );
@@ -96,38 +109,10 @@ static void button_init() {
     ESP_ERROR_CHECK(
         gpio_isr_handler_add(
             CALI_BUTTON_PIN,
-            cali_button_isr,
+            button_b_isr,
             nullptr
         )
     );
-}
-
-static void start_button_task(void* args) {
-    while (true) {
-        // Sleep until button interrupt occurs
-        ulTaskNotifyTake(
-            pdTRUE,
-            portMAX_DELAY
-        );
-
-        ESP_LOGI("BUTTON", "Start button pressed");
-        send_start_msg();
-        xTaskNotifyGive(read_imu_task_handle);
-    }
-}
-
-static void cali_button_task(void* args) {
-    while (true) {
-        // Sleep until button interrupt occurs
-        ulTaskNotifyTake(
-            pdTRUE,
-            portMAX_DELAY
-        );
-
-        ESP_LOGI("BUTTON", "Calibration button pressed");
-        send_cali_msg();
-        xTaskNotifyGive(calibration_task_handle);
-    }
 }
 
 #endif
@@ -226,9 +211,10 @@ void read_imu_task(void *arg) {
 
 void calibration_task(void *arg) {
     while (true) {
-        // put it to suspension upon creation
+        // put it to suspension upon creation, suspend after every calibration cycle
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        ESP_LOGI("CALIBRATION", "Starting zero calibration");
+        ESP_LOGI("CALIBRATION", "Waiting 2 seconds before start");
+        vTaskDelay(pdMS_TO_TICKS(2000));
         get_lsm6dsox_zero_calibration(dev_handle);
         ESP_LOGI("CALIBRATION", "Zero calibration completed");
         ESP_LOGI("CALIBRATION", "Gyro offsets: %f, %f, %f", gyro_offset[0], gyro_offset[1], gyro_offset[2]);
@@ -279,35 +265,69 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
 }
 
 // ------------------Events control ------------------
-typedef enum {
-    EVENT_START_BUTTON,
-    EVENT_CALIBRATION_BUTTON,
-    EVENT_STOP,
-    EVENT_ERROR
-} system_event_t;
 
-static QueueHandle_t event_queue;
-
-void main_ctrl_task(void *arg) {
+/// @brief Finite State Machine task that handles system states transitions based on events.
+/// @param arg 
+void fsm_task(void *arg) {
+    // event would be a system_event_t, which is a signal for the FSM to transition states.
+    system_event_t event;
     while (true) {
-        system_event_t event;
+        // Wait for the next event from the event queue
         xQueueReceive(event_queue, &event, portMAX_DELAY);
-        switch (event) {
-            case EVENT_START_BUTTON:
-                // handle start button event
+        // Implement the finite state machine logic here
+        // under each case, give/take tasks based on the event received
+        switch (current_state) {
+            case SS_STARTUP:
+                // Handle startup state
+                switch (event) {
+                    case SE_INIT_READY:
+                        ESP_LOGI("FSM", "SS_STARTUP state, received SE_INIT_READY event");
+                        current_state = SS_MENU;
+                        break;
+                    case SE_ERROR:
+                        ESP_LOGI("FSM", "SS_STARTUP state, received SE_ERROR event");
+                        current_state = SS_ERROR;
+                        break;
+                    default:
+                        break;
+                }
                 break;
-            case EVENT_CALIBRATION_BUTTON:
-                // handle calibration button event
+            case SS_IDLE:
+                // Handle idle state
                 break;
-            case EVENT_STOP:
-                // handle stop event
+            case SS_SESSION:
+                // Handle session state
                 break;
-            case EVENT_ERROR:
-                // handle error event
+            case SS_ERROR:
+                // Handle error state
+                break;
+            case SS_MENU:
+                // Handle menu state
+                switch (event) {
+                    case SE_EXTA:
+                        ESP_LOGI("FSM", "SS_MENU state, received SE_EXTA event");
+                        // notify all devices to trigger calibration task
+                        send_cali_msg();
+                        xTaskNotifyGive(calibration_task_handle);
+                        break;
+                    case SE_EXTB:
+                        ESP_LOGI("FSM", "SS_MENU state, received SE_EXTB event");
+                        // notify all devices to read imu data
+                        send_start_msg();
+                        xTaskNotifyGive(read_imu_task_handle);
+                        break;
+                    case SE_ERROR:
+                        ESP_LOGI("FSM", "SS_MENU state, received SE_ERROR event");
+                        current_state = SS_ERROR;
+                        break;
+                    default:
+                        break;
+                }
                 break;
             default:
                 break;
         }
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -372,23 +392,6 @@ extern "C" void app_main() {
 #endif
 
 #ifdef DEVICE_CENTRAL
-    // button callback configuration
-    xTaskCreate(
-        start_button_task,
-        "Start Button Task",
-        4096,
-        nullptr,
-        5,
-        &start_button_task_handle
-    );
-    xTaskCreate(
-        cali_button_task,
-        "Calibration Button Task",
-        4096,
-        nullptr,
-        5,
-        &cali_button_task_handle
-    );
     // attach to interrupt for buttons
     button_init();
 #endif
@@ -414,10 +417,24 @@ extern "C" void app_main() {
         tskNO_AFFINITY
     );
 
+    ESP_LOGI("SYSTEM", "All initialization done");
+    // All init done, notify system
+    ESP_LOGI("SYSTEM", "Pushing SE_INIT_READY event");
+    push_event(SE_INIT_READY);
+
     // keep main task alive
     // FSM
-    while (true)
-    {
+    xTaskCreatePinnedToCore(
+        fsm_task,
+        "FSM Task",
+        4096,
+        NULL,
+        5,
+        &fsm_task_handle,
+        tskNO_AFFINITY
+    );
+
+    while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
