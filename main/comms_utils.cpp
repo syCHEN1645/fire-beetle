@@ -22,6 +22,33 @@ void display_mac_address() {
     );
 }
 
+void display_ip_info() {
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info{};
+    if (sta_netif == nullptr) {
+        ESP_LOGE("WIFI", "STA netif not found");
+    } else {
+        esp_err_t err = esp_netif_get_ip_info(sta_netif, &ip_info);
+        if (err == ESP_OK) {
+            ESP_LOGI(
+                "WIFI",
+                "ESP IP: " IPSTR,
+                IP2STR(&ip_info.ip)
+            );
+            ESP_LOGI(
+                "WIFI",
+                "Gateway: " IPSTR,
+                IP2STR(&ip_info.gw)
+            );
+            ESP_LOGI(
+                "WIFI",
+                "Netmask: " IPSTR,
+                IP2STR(&ip_info.netmask)
+            );
+        }
+    }
+}
+
 void wifi_init() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -73,7 +100,143 @@ void wifi_init() {
 #endif
 }
 
+/// @brief Initialize ESP-NOW communication. Assume Wi-Fi is already initialized and connected.
+/// @param channel The Wi-Fi channel to use for ESP-NOW communication.
+void espnow_init(uint8_t channel = 0) {
+    ESP_ERROR_CHECK(esp_now_init());
+
+    ESP_ERROR_CHECK(
+        esp_now_register_recv_cb(espnow_receive_callback)
+    );
+
+    ESP_ERROR_CHECK(
+        esp_now_register_send_cb(espnow_send_callback)
+    );
+
 #ifdef DEVICE_CENTRAL
+    // Central sends control messages to all peripherals
+    // using the broadcast MAC address.
+    esp_now_peer_info_t peer_info{};
+    memcpy(
+        peer_info.peer_addr,
+        BOARDCAST_MAC,
+        ESP_NOW_ETH_ALEN
+    );
+    // channel 0 is the current channel
+    peer_info.channel = channel;
+    peer_info.ifidx = WIFI_IF_STA;
+    peer_info.encrypt = false;
+
+    ESP_ERROR_CHECK(
+        esp_now_add_peer(&peer_info)
+    );
+
+    ESP_LOGI(
+        "ESP-NOW",
+        "Central ESP-NOW ready, channel %u",
+        channel
+    );
+
+#endif
+
+#ifdef DEVICE_PERIPHERAL
+    // Peripheral sends IMU data to the central device.
+    ESP_ERROR_CHECK(
+        esp_wifi_set_channel(
+            channel,
+            WIFI_SECOND_CHAN_NONE
+        )
+    );
+
+    esp_now_peer_info_t peer_info{};
+    memcpy(
+        peer_info.peer_addr,
+        CENTRAL_MAC,
+        ESP_NOW_ETH_ALEN
+    );
+    peer_info.channel = channel;
+    peer_info.ifidx = WIFI_IF_STA;
+    peer_info.encrypt = false;
+
+    ESP_ERROR_CHECK(
+        esp_now_add_peer(&peer_info)
+    );
+
+    ESP_LOGI(
+        "ESP-NOW",
+        "Peripheral ESP-NOW ready, channel %u",
+        channel
+    );
+#endif
+}
+
+#ifdef DEVICE_CENTRAL
+void espnow_receive_callback(
+    const esp_now_recv_info_t *recv_info,
+    const uint8_t *data,
+    int len) {
+    imu_msg_t imu_msg;
+    if (len == sizeof(imu_msg_t)) {
+        memcpy(&imu_msg, data, sizeof(imu_msg_t));
+    } else {
+        return;
+    }
+
+    if (imu_msg.index >= IMU_DATA_LEN) {
+        ESP_LOGW(
+            "ESP-NOW",
+            "Invalid IMU index: %d",
+            imu_msg.index
+        );
+        return;
+    }
+
+    size_t imu_index = SIZE_MAX;
+    // check the mac address of the sender
+    if (memcmp(recv_info->src_addr, LEFT_LOWER_MAC, 6) == 0) {
+        imu_index = 0;
+    } else if (memcmp(recv_info->src_addr, LEFT_UPPER_MAC, 6) == 0) {
+        imu_index = 1;
+    } else if (memcmp(recv_info->src_addr, RIGHT_LOWER_MAC, 6) == 0) {
+        imu_index = 2;
+    } else if (memcmp(recv_info->src_addr, RIGHT_UPPER_MAC, 6) == 0) {
+        imu_index = 3;
+    } else {
+        ESP_LOGW("ESP-NOW", "Received IMU message from unknown MAC address");
+        return;
+    }
+
+    // store the received imu message into the all_imu_data buffer
+    // struct imu_msg_t {
+    //     float accel_x;
+    //     float accel_y;
+    //     float accel_z;
+    //     float gyro_x;
+    //     float gyro_y;
+    //     float gyro_z;
+    //     int index;
+    // };
+    if (imu_index != SIZE_MAX) {
+        all_imu_data[imu_index][0][imu_msg.index] = imu_msg.accel_x;
+        all_imu_data[imu_index][1][imu_msg.index] = imu_msg.accel_y;
+        all_imu_data[imu_index][2][imu_msg.index] = imu_msg.accel_z;
+        all_imu_data[imu_index][3][imu_msg.index] = imu_msg.gyro_x;
+        all_imu_data[imu_index][4][imu_msg.index] = imu_msg.gyro_y;
+        all_imu_data[imu_index][5][imu_msg.index] = imu_msg.gyro_z;
+        imu_data_collection_count = imu_msg.index;
+    }
+}
+
+void espnow_send_callback(
+    const esp_now_send_info_t *tx_info,
+    esp_now_send_status_t status) {
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        ESP_LOGI("ESP-NOW", "ESP-NOW send success");
+    } else {
+        ESP_LOGE("ESP-NOW", "ESP-NOW send failed");
+    }
+}
+
 void send_ctrl_msg(const ctrl_msg_t &msg) {
     esp_err_t result = esp_now_send(
         BOARDCAST_MAC,
@@ -246,5 +409,27 @@ uint8_t scan_wifi_channel() {
     delete[] ap_records;
 
     return found_channel;
+}
+
+static void espnow_receive_callback(
+    const esp_now_recv_info_t *recv_info,
+    const uint8_t *data,
+    int len) {
+    if (len != sizeof(ctrl_msg_t)) {
+        return;
+    }
+    ctrl_msg_t msg;
+    memcpy(&msg, data, sizeof(ctrl_msg_t));
+    handle_control_message(msg);
+}
+
+static void espnow_send_callback(
+    const esp_now_send_info_t *tx_info,
+    esp_now_send_status_t status) {
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        ESP_LOGI("ESP-NOW", "ESP-NOW send success");
+    } else {
+        ESP_LOGE("ESP-NOW", "ESP-NOW send failed");
+    }
 }
 #endif

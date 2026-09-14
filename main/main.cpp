@@ -30,7 +30,6 @@
 
 // IMU data buffers
 uint8_t imu_data_buffer[12];
-uint16_t imu_data_collection_count = 0;
 // IMU zero calibration data (double to avoid integer division)
 float imu_zero_calibration[6];
 float gyro_offset[3];
@@ -135,74 +134,6 @@ static void cali_button_task(void* args) {
 
 // ----------------WiFi----------------
 
-#ifdef DEVICE_CENTRAL
-static void espnow_receive_callback(
-    const esp_now_recv_info_t *recv_info,
-    const uint8_t *data,
-    int len) {
-    imu_msg_t imu_msg;
-    if (len == sizeof(imu_msg_t)) {
-        memcpy(&imu_msg, data, sizeof(imu_msg_t));
-    } else {
-        return;
-    }
-
-    if (imu_msg.index >= IMU_DATA_LEN) {
-        ESP_LOGW(
-            "ESP-NOW",
-            "Invalid IMU index: %d",
-            imu_msg.index
-        );
-        return;
-    }
-
-    size_t imu_index = SIZE_MAX;
-    // check the mac address of the sender
-    if (memcmp(recv_info->src_addr, LEFT_LOWER_MAC, 6) == 0) {
-        imu_index = 0;
-    } else if (memcmp(recv_info->src_addr, LEFT_UPPER_MAC, 6) == 0) {
-        imu_index = 1;
-    } else if (memcmp(recv_info->src_addr, RIGHT_LOWER_MAC, 6) == 0) {
-        imu_index = 2;
-    } else if (memcmp(recv_info->src_addr, RIGHT_UPPER_MAC, 6) == 0) {
-        imu_index = 3;
-    } else {
-        ESP_LOGW("ESP-NOW", "Received IMU message from unknown MAC address");
-        return;
-    }
-
-    // store the received imu message into the all_imu_data buffer
-    // struct imu_msg_t {
-    //     float accel_x;
-    //     float accel_y;
-    //     float accel_z;
-    //     float gyro_x;
-    //     float gyro_y;
-    //     float gyro_z;
-    //     int index;
-    // };
-    if (imu_index != SIZE_MAX) {
-        all_imu_data[imu_index][0][imu_msg.index] = imu_msg.accel_x;
-        all_imu_data[imu_index][1][imu_msg.index] = imu_msg.accel_y;
-        all_imu_data[imu_index][2][imu_msg.index] = imu_msg.accel_z;
-        all_imu_data[imu_index][3][imu_msg.index] = imu_msg.gyro_x;
-        all_imu_data[imu_index][4][imu_msg.index] = imu_msg.gyro_y;
-        all_imu_data[imu_index][5][imu_msg.index] = imu_msg.gyro_z;
-        imu_data_collection_count = imu_msg.index;
-    }
-}
-
-static void espnow_send_callback(
-    const esp_now_send_info_t *tx_info,
-    esp_now_send_status_t status) {
-    if (status == ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGI("ESP-NOW", "ESP-NOW send success");
-    } else {
-        ESP_LOGE("ESP-NOW", "ESP-NOW send failed");
-    }
-}
-
-#endif
 
 #ifdef DEVICE_PERIPHERAL
 
@@ -225,27 +156,6 @@ static void handle_control_message(const ctrl_msg_t& msg) {
     }
 }
 
-static void espnow_receive_callback(
-    const esp_now_recv_info_t *recv_info,
-    const uint8_t *data,
-    int len) {
-    if (len != sizeof(ctrl_msg_t)) {
-        return;
-    }
-    ctrl_msg_t msg;
-    memcpy(&msg, data, sizeof(ctrl_msg_t));
-    handle_control_message(msg);
-}
-
-static void espnow_send_callback(
-    const esp_now_send_info_t *tx_info,
-    esp_now_send_status_t status) {
-    if (status == ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGI("ESP-NOW", "ESP-NOW send success");
-    } else {
-        ESP_LOGE("ESP-NOW", "ESP-NOW send failed");
-    }
-}
 #endif
 
 void read_imu_task(void *arg) {
@@ -328,79 +238,6 @@ void calibration_task(void *arg) {
     }
 }
 
-
-
-
-/// @brief Initialize ESP-NOW communication. Assume Wi-Fi is already initialized and connected.
-/// @param channel The Wi-Fi channel to use for ESP-NOW communication.
-static void espnow_init(uint8_t channel = 0) {
-    ESP_ERROR_CHECK(esp_now_init());
-
-    ESP_ERROR_CHECK(
-        esp_now_register_recv_cb(espnow_receive_callback)
-    );
-
-    ESP_ERROR_CHECK(
-        esp_now_register_send_cb(espnow_send_callback)
-    );
-
-#ifdef DEVICE_CENTRAL
-    // Central sends control messages to all peripherals
-    // using the broadcast MAC address.
-    esp_now_peer_info_t peer_info{};
-    memcpy(
-        peer_info.peer_addr,
-        BOARDCAST_MAC,
-        ESP_NOW_ETH_ALEN
-    );
-    // channel 0 is the current channel
-    peer_info.channel = channel;
-    peer_info.ifidx = WIFI_IF_STA;
-    peer_info.encrypt = false;
-
-    ESP_ERROR_CHECK(
-        esp_now_add_peer(&peer_info)
-    );
-
-    ESP_LOGI(
-        "ESP-NOW",
-        "Central ESP-NOW ready, channel %u",
-        channel
-    );
-
-#endif
-
-#ifdef DEVICE_PERIPHERAL
-    // Peripheral sends IMU data to the central device.
-    ESP_ERROR_CHECK(
-        esp_wifi_set_channel(
-            channel,
-            WIFI_SECOND_CHAN_NONE
-        )
-    );
-
-    esp_now_peer_info_t peer_info{};
-    memcpy(
-        peer_info.peer_addr,
-        CENTRAL_MAC,
-        ESP_NOW_ETH_ALEN
-    );
-    peer_info.channel = channel;
-    peer_info.ifidx = WIFI_IF_STA;
-    peer_info.encrypt = false;
-
-    ESP_ERROR_CHECK(
-        esp_now_add_peer(&peer_info)
-    );
-
-    ESP_LOGI(
-        "ESP-NOW",
-        "Peripheral ESP-NOW ready, channel %u",
-        channel
-    );
-#endif
-}
-
 void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle) {
     i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_PORT,
@@ -441,11 +278,43 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
     ESP_LOGI("I2C", "I2C master initialized successfully");
 }
 
+// ------------------Events control ------------------
+typedef enum {
+    EVENT_START_BUTTON,
+    EVENT_CALIBRATION_BUTTON,
+    EVENT_STOP,
+    EVENT_ERROR
+} system_event_t;
+
+static QueueHandle_t event_queue;
+
+void main_ctrl_task(void *arg) {
+    while (true) {
+        system_event_t event;
+        xQueueReceive(event_queue, &event, portMAX_DELAY);
+        switch (event) {
+            case EVENT_START_BUTTON:
+                // handle start button event
+                break;
+            case EVENT_CALIBRATION_BUTTON:
+                // handle calibration button event
+                break;
+            case EVENT_STOP:
+                // handle stop event
+                break;
+            case EVENT_ERROR:
+                // handle error event
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 extern "C" void app_main() {
     // initialize I2C master
-
     i2c_master_init(&bus_handle, &dev_handle);
-
+    // set IMU configuration
     set_lsm6dsox_imu_config(dev_handle);
 
     esp_err_t ret = nvs_flash_init();
@@ -455,45 +324,14 @@ extern "C" void app_main() {
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-
     // start wifi and esp-now
     wifi_init();
     vTaskDelay(pdMS_TO_TICKS(3000));
-
     // debug
-    display_mac_address();
-    esp_netif_t *sta_netif =
-        esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-
-    esp_netif_ip_info_t ip_info{};
-
-    if (sta_netif == nullptr) {
-        ESP_LOGE("WIFI", "STA netif not found");
-    } else {
-        esp_err_t err = esp_netif_get_ip_info(sta_netif, &ip_info);
-
-        if (err == ESP_OK) {
-            ESP_LOGI(
-                "WIFI",
-                "ESP IP: " IPSTR,
-                IP2STR(&ip_info.ip)
-            );
-
-            ESP_LOGI(
-                "WIFI",
-                "Gateway: " IPSTR,
-                IP2STR(&ip_info.gw)
-            );
-
-            ESP_LOGI(
-                "WIFI",
-                "Netmask: " IPSTR,
-                IP2STR(&ip_info.netmask)
-            );
-        }
-    }
-
+    // display_mac_address();
+    // display_ip_info();
     
+    // configure wifi channel
 #ifdef DEVICE_CENTRAL
     // get actual wifi channel
     // make sure wifi is connected
@@ -511,7 +349,6 @@ extern "C" void app_main() {
 #endif
 
 #ifdef DEVICE_PERIPHERAL
-    // peripheral device
     uint8_t count = 0, channel = 0;
     while (channel == 0 && count <= 5) {
         channel = scan_wifi_channel();
@@ -535,7 +372,7 @@ extern "C" void app_main() {
 #endif
 
 #ifdef DEVICE_CENTRAL
-
+    // button callback configuration
     xTaskCreate(
         start_button_task,
         "Start Button Task",
@@ -552,13 +389,11 @@ extern "C" void app_main() {
         5,
         &cali_button_task_handle
     );
-
+    // attach to interrupt for buttons
     button_init();
-
 #endif
 
-    // all firebeetles should have the task to read its own imu
-    
+    // create imu read task
     xTaskCreatePinnedToCore(
         read_imu_task,
         "Read IMU Task",
@@ -568,7 +403,7 @@ extern "C" void app_main() {
         &read_imu_task_handle,
         tskNO_AFFINITY
     );
-
+    // create imu calibration task
     xTaskCreatePinnedToCore(
         calibration_task,
         "Calibration Task",
@@ -580,6 +415,7 @@ extern "C" void app_main() {
     );
 
     // keep main task alive
+    // FSM
     while (true)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
