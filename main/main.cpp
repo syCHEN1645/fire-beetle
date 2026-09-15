@@ -27,6 +27,9 @@
 #include "func_config.h"
 #include "imu_utils.h"
 #include "comms_utils.h"
+#ifdef DEVICE_CENTRAL
+#include "state_utils.h"
+#endif
 
 // IMU data buffers
 uint8_t imu_data_buffer[12];
@@ -43,28 +46,9 @@ static TaskHandle_t read_imu_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
-typedef enum {
-    SE_EXTA,
-    SE_EXTB,
-    SE_EXTC,
-    SE_EXTD,
-    SE_EXTE,
-    SE_INIT_READY,
-    SE_ERROR,
-} system_event_t;
-
-typedef enum {
-    SS_STARTUP,
-    SS_IDLE,
-    SS_SESSION,
-    SS_ERROR,
-    SS_MENU,
-} system_state_t;
 
 // -----------Event Queue-----------
 static QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
-static system_state_t current_state = SS_STARTUP;
-
 
 /// @brief Push an event to the event queue from an ISR.
 /// @param e The event to be pushed.
@@ -76,11 +60,11 @@ static void push_event(system_event_t e) {
 }
 
 static void IRAM_ATTR button_a_isr(void* arg) {
-    push_event(SE_EXTA);
+    push_event(SE_DOWN);
 }
 
 static void IRAM_ATTR button_b_isr(void* arg) {
-    push_event(SE_EXTB);
+    push_event(SE_CLICK);
 }
 
 static void button_init() {
@@ -142,6 +126,15 @@ static void handle_control_message(const ctrl_msg_t& msg) {
 }
 
 #endif
+
+void send_to_ar() {
+    // dummy
+}
+
+void recv_from_ar() {
+    // dummy
+    // expect instruction messages that trigger state change
+}
 
 void read_imu_task(void *arg) {
     while (true) {
@@ -266,6 +259,16 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
 
 // ------------------Events control ------------------
 
+void start_calibration() {
+    send_cali_msg();
+    xTaskNotifyGive(calibration_task_handle);
+}
+
+void start_session() {
+    send_start_msg();
+    xTaskNotifyGive(read_imu_task_handle);
+}
+
 /// @brief Finite State Machine task that handles system states transitions based on events.
 /// @param arg 
 void fsm_task(void *arg) {
@@ -279,55 +282,28 @@ void fsm_task(void *arg) {
         switch (current_state) {
             case SS_STARTUP:
                 // Handle startup state
-                switch (event) {
-                    case SE_INIT_READY:
-                        ESP_LOGI("FSM", "SS_STARTUP state, received SE_INIT_READY event");
-                        current_state = SS_MENU;
-                        break;
-                    case SE_ERROR:
-                        ESP_LOGI("FSM", "SS_STARTUP state, received SE_ERROR event");
-                        current_state = SS_ERROR;
-                        break;
-                    default:
-                        break;
-                }
+                handle_startup(event);
                 break;
             case SS_IDLE:
                 // Handle idle state
+                handle_idle(event);
                 break;
             case SS_SESSION:
                 // Handle session state
+                handle_session(event);
                 break;
             case SS_ERROR:
                 // Handle error state
+                handle_error(event);
                 break;
             case SS_MENU:
                 // Handle menu state
-                switch (event) {
-                    case SE_EXTA:
-                        ESP_LOGI("FSM", "SS_MENU state, received SE_EXTA event");
-                        // notify all devices to trigger calibration task
-                        send_cali_msg();
-                        xTaskNotifyGive(calibration_task_handle);
-                        break;
-                    case SE_EXTB:
-                        ESP_LOGI("FSM", "SS_MENU state, received SE_EXTB event");
-                        // notify all devices to read imu data
-                        send_start_msg();
-                        xTaskNotifyGive(read_imu_task_handle);
-                        break;
-                    case SE_ERROR:
-                        ESP_LOGI("FSM", "SS_MENU state, received SE_ERROR event");
-                        current_state = SS_ERROR;
-                        break;
-                    default:
-                        break;
-                }
+                handle_menu(event);
+                // TODO: Make sure AR side is synchronized with the menu selection, handshake to check
                 break;
             default:
                 break;
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
