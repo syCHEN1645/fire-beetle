@@ -1,6 +1,7 @@
 #define SINGLE_ACTION_TIME_MS 3000
 #define IMU_DATA_F 26
 #define IMU_DATA_LEN IMU_DATA_F*3
+#define IMU_TRIGGER_LEN IMU_DATA_F*1
 // TODO: pending update
 #define CENTRAL_MAC_ADDR      {0x38, 0x18, 0x2b, 0x13, 0x4f, 0xbc}
 #define LEFT_LOWER_MAC_ADDR   {0x38, 0x18, 0x2b, 0x13, 0x4f, 0xbc}

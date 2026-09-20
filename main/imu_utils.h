@@ -14,7 +14,6 @@ extern "C" {
 #endif
 
 extern uint8_t imu_data_buffer[12];
-extern uint16_t imu_data_collection_count;
 extern float imu_zero_calibration[6];
 extern float gyro_offset[3];
 extern float accel_rotation[3][3];
@@ -24,7 +23,7 @@ esp_err_t read_from_lsm6dsox_imu(i2c_master_dev_handle_t dev_handle, uint8_t *re
 void parse_lsm6dsox_imu_data(uint8_t bytes_buffer[12], float raw_buffer[6]);
 void zero_calibrate_lsm6dsox_imu_data(float imu_data[6]);
 float get_median(float *data, size_t size);
-void median_smooth_lsm6dsox_imu_data(float imu_data[6][IMU_DATA_LEN]);
+void median_smooth_lsm6dsox_imu_data(float *imu_data, size_t imu_index, size_t sample_index, size_t data_entry);
 void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle);
 
 #ifdef __cplusplus

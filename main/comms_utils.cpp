@@ -206,24 +206,33 @@ void espnow_receive_callback(
         return;
     }
 
-    // store the received imu message into the all_imu_data buffer
-    // struct imu_msg_t {
-    //     float accel_x;
-    //     float accel_y;
-    //     float accel_z;
-    //     float gyro_x;
-    //     float gyro_y;
-    //     float gyro_z;
-    //     int index;
-    // };
-    if (imu_index != SIZE_MAX) {
-        all_imu_data[imu_index][0][imu_msg.index] = imu_msg.accel_x;
-        all_imu_data[imu_index][1][imu_msg.index] = imu_msg.accel_y;
-        all_imu_data[imu_index][2][imu_msg.index] = imu_msg.accel_z;
-        all_imu_data[imu_index][3][imu_msg.index] = imu_msg.gyro_x;
-        all_imu_data[imu_index][4][imu_msg.index] = imu_msg.gyro_y;
-        all_imu_data[imu_index][5][imu_msg.index] = imu_msg.gyro_z;
-        imu_data_collection_count = imu_msg.index;
+    // imu_index in all_imu_data:
+    // 0: LEFT_LOWER, 1: LEFT_UPPER, 2: RIGHT_LOWER, 3: RIGHT_UPPER
+    // imu_index in trigger_reference:
+    // 0: LEFT_LOWER_ACCEL, 1: LEFT_LOWER_GYRO, 2: LEFT_UPPER_ACCEL, 3: LEFT_UPPER_GYRO,
+    // 4: RIGHT_LOWER_ACCEL, 5: RIGHT_LOWER_GYRO, 6: RIGHT_UPPER_ACCEL, 7: RIGHT_UPPER_GYRO
+    switch (imu_msg.type) {
+        case MessageType::DATA:
+            // store the received imu message into the all_imu_data buffer
+            all_imu_data[imu_index][imu_msg.index][0] = imu_msg.accel_x;
+            all_imu_data[imu_index][imu_msg.index][1] = imu_msg.accel_y;
+            all_imu_data[imu_index][imu_msg.index][2] = imu_msg.accel_z;
+            all_imu_data[imu_index][imu_msg.index][3] = imu_msg.gyro_x;
+            all_imu_data[imu_index][imu_msg.index][4] = imu_msg.gyro_y;
+            all_imu_data[imu_index][imu_msg.index][5] = imu_msg.gyro_z;
+            break;
+        case MessageType::CALI_TRIGGER:
+            // store into the trigger_reference array
+            trigger_reference[imu_index * 2][imu_msg.index][0] = imu_msg.accel_x;
+            trigger_reference[imu_index * 2][imu_msg.index][1] = imu_msg.accel_y;
+            trigger_reference[imu_index * 2][imu_msg.index][2] = imu_msg.accel_z;
+            trigger_reference[imu_index * 2 + 1][imu_msg.index][0] = imu_msg.gyro_x;
+            trigger_reference[imu_index * 2 + 1][imu_msg.index][1] = imu_msg.gyro_y;
+            trigger_reference[imu_index * 2 + 1][imu_msg.index][2] = imu_msg.gyro_z;
+            break;
+        default:
+            ESP_LOGW("ESP-NOW", "Received unknown IMU message type");
+            break;
     }
 }
 
@@ -254,15 +263,23 @@ void send_start_msg() {
     ctrl_msg_t msg;
     msg.timestamp = xTaskGetTickCount();
     msg.index = 0;
-    msg.type = MessageType::START;
+    msg.type = MessageType::DATA;
     send_ctrl_msg(msg);
 }
 
-void send_cali_msg() {
+void send_cali_zero_msg() {
     ctrl_msg_t msg;
     msg.timestamp = xTaskGetTickCount();
     msg.index = 0;
-    msg.type = MessageType::CALI;
+    msg.type = MessageType::CALI_ZERO;
+    send_ctrl_msg(msg);
+}
+
+void send_trigger_ref_msg() {
+    ctrl_msg_t msg;
+    msg.timestamp = xTaskGetTickCount();
+    msg.index = 0;
+    msg.type = MessageType::CALI_TRIGGER;
     send_ctrl_msg(msg);
 }
 

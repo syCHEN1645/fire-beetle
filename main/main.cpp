@@ -28,6 +28,7 @@
 #include "imu_utils.h"
 #include "comms_utils.h"
 #ifdef DEVICE_CENTRAL
+#include "dtw.h"
 #include "state_utils.h"
 #endif
 
@@ -44,11 +45,15 @@ i2c_master_dev_handle_t dev_handle;
 static TaskHandle_t fsm_task_handle = NULL;
 static TaskHandle_t read_imu_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
+static TaskHandle_t trigger_reference_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
 
 // -----------Event Queue-----------
 static QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
+
+// Dynamic Time Warping instances for gyro and accel for each IMU sensor
+static DTW dtw[8];
 
 /// @brief Push an event to the event queue from an ISR.
 /// @param e The event to be pushed.
@@ -109,14 +114,19 @@ static void button_init() {
 static void handle_control_message(const ctrl_msg_t& msg) {
     switch (msg.type)
     {
-        case MessageType::START:
-            ESP_LOGI("RECV", "START received");
+        case MessageType::DATA:
+            ESP_LOGI("RECV", "DATA received");
             xTaskNotifyGive(read_imu_task_handle);
             break;
 
-        case MessageType::CALI:
-            ESP_LOGI("RECV", "CALI received");
+        case MessageType::CALI_ZERO:
+            ESP_LOGI("RECV", "CALI_ZERO received");
             xTaskNotifyGive(calibration_task_handle);
+            break;
+
+        case MessageType::CALI_TRIGGER:
+            ESP_LOGI("RECV", "CALI_TRIGGER received");
+            xTaskNotifyGive(trigger_reference_task_handle);
             break;
 
         case MessageType::SYNC:
@@ -134,6 +144,71 @@ void send_to_ar() {
 void recv_from_ar() {
     // dummy
     // expect instruction messages that trigger state change
+}
+
+/// @brief Task to collect IMU data for trigger reference before session starts. Reuse IMU data buffer. 
+void trigger_reference_task(void *arg) {
+    while (true) {
+        // put it to suspension upon creation
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // TODO: use semaphore to lock, this is accessed by multiple tasks
+        imu_data_collection_count = 0;
+        // same as read_imu_task but store the samples locally on central device
+        while (imu_data_collection_count < IMU_TRIGGER_LEN) {
+            esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
+            if (err != ESP_OK) {
+                ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+            }
+            float imu_data[6];
+            parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
+            zero_calibrate_lsm6dsox_imu_data(imu_data);
+            
+            ESP_LOGI("IMU", "Collected IMU data:");
+#ifdef DEVICE_CENTRAL
+            for (int i = 0; i < 4; i++) {
+                trigger_reference[0][imu_data_collection_count][i] = imu_data[i];
+                trigger_reference[1][imu_data_collection_count][i] = imu_data[i + 3];
+                ESP_LOGI("IMU", "%f", imu_data[i]);
+            }
+#endif
+#ifdef DEVICE_PERIPHERAL
+            for (int i = 0; i < 6; i++) {
+                // imu_data_collection[imu_data_collection_count][i] = imu_data[i];
+                ESP_LOGI("IMU", "%f", imu_data[i]);
+            }
+            // send the collected IMU data to the central device via ESP-NOW
+            imu_msg_t imu_msg;
+            imu_msg.accel_x = imu_data[0];
+            imu_msg.accel_y = imu_data[1];
+            imu_msg.accel_z = imu_data[2];
+            imu_msg.gyro_x = imu_data[3];
+            imu_msg.gyro_y = imu_data[4];
+            imu_msg.gyro_z = imu_data[5];
+            imu_msg.index = imu_data_collection_count;
+            imu_msg.type = MessageType::CALI_TRIGGER;
+            esp_err_t result = esp_now_send(
+                CENTRAL_MAC,
+                reinterpret_cast<const uint8_t *>(&imu_msg),
+                sizeof(imu_msg)
+            );
+            if (result != ESP_OK) {
+                ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
+            }
+#endif
+            imu_data_collection_count++;
+            vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
+        }
+#ifdef DEVICE_CENTRAL
+        // wait for a short period for all data to arrive
+        vTaskDelay(pdMS_TO_TICKS(100));
+        median_smooth_lsm6dsox_imu_data(
+            (float*)trigger_reference, 
+            8, 
+            IMU_TRIGGER_LEN,
+            6
+        );
+#endif
+    }
 }
 
 void read_imu_task(void *arg) {
@@ -156,14 +231,14 @@ void read_imu_task(void *arg) {
 
 #ifdef DEVICE_CENTRAL
             for (int i = 0; i < 6; i++) {
-                all_imu_data[0][i][imu_data_collection_count] = imu_data[i];
+                all_imu_data[0][imu_data_collection_count][i] = imu_data[i];
                 ESP_LOGI("IMU", "%f", imu_data[i]);
             }
 #endif
 
 #ifdef DEVICE_PERIPHERAL
             for (int i = 0; i < 6; i++) {
-                // imu_data_collection[i][imu_data_collection_count] = imu_data[i];
+                // imu_data_collection[imu_data_collection_count][i] = imu_data[i];
                 ESP_LOGI("IMU", "%f", imu_data[i]);
             }
             // send the collected IMU data to the central device via ESP-NOW
@@ -175,6 +250,7 @@ void read_imu_task(void *arg) {
             imu_msg.gyro_y = imu_data[4];
             imu_msg.gyro_z = imu_data[5];
             imu_msg.index = imu_data_collection_count;
+            imu_msg.type = MessageType::DATA;
             esp_err_t result = esp_now_send(
                 CENTRAL_MAC,
                 reinterpret_cast<const uint8_t *>(&imu_msg),
@@ -194,9 +270,12 @@ void read_imu_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(100));
         // TODO: use semaphore to lock the array to stop late transmissions
-        for (int i = 0; i < 4; i++) {
-            median_smooth_lsm6dsox_imu_data(all_imu_data[i]);
-        }
+        median_smooth_lsm6dsox_imu_data(
+            (float*)all_imu_data,
+            4,
+            IMU_DATA_LEN,
+            6
+        );
         send_imu_data_to_laptop();
 #endif
     }
@@ -260,8 +339,13 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
 // ------------------Events control ------------------
 
 void start_calibration() {
-    send_cali_msg();
+    send_cali_zero_msg();
     xTaskNotifyGive(calibration_task_handle);
+}
+
+void start_trigger_reference() {
+    send_trigger_ref_msg();
+    xTaskNotifyGive(trigger_reference_task_handle);
 }
 
 void start_session() {
@@ -390,6 +474,16 @@ extern "C" void app_main() {
         NULL,
         5,
         &calibration_task_handle,
+        tskNO_AFFINITY
+    );
+    // create trigger reference task
+    xTaskCreatePinnedToCore(
+        trigger_reference_task,
+        "Trigger Reference Task",
+        4096,
+        NULL,
+        5,
+        &trigger_reference_task_handle,
         tskNO_AFFINITY
     );
 

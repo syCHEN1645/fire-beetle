@@ -135,16 +135,24 @@ float get_median(float *data, size_t size) {
 }
 
 /// @brief For each data, smooths the data using a median filter with a window size of 3.
-/// @param imu_data Pointer to the 2D array of IMU data to be smoothed.
-void median_smooth_lsm6dsox_imu_data(float imu_data[6][IMU_DATA_LEN]) {
-    float imu_copy[6][IMU_DATA_LEN];
-    memcpy(imu_copy, imu_data, sizeof(imu_copy));
-    for (int i = 2; i < IMU_DATA_LEN; i++) {
-        for (int j = 0; j < 6; j++) {
-            float temp[3] = {imu_copy[j][i-2], imu_copy[j][i-1], imu_copy[j][i]};
-            imu_data[j][i] = get_median(temp, sizeof(temp)/sizeof(temp[0]));
+/// @param imu_data Pointer to the 1D array of IMU data to be smoothed, representing a 3D array in row-major order.
+/// @param imu_index The first dimension.
+/// @param sample_index The second dimension.
+/// @param data_entry The third dimension.
+void median_smooth_lsm6dsox_imu_data(float* imu_data, size_t imu_index, size_t sample_index, size_t data_entry) {
+    float *imu_copy = new float[imu_index * sample_index * data_entry];
+    for (size_t i = 0; i < imu_index * sample_index * data_entry; i++) {
+        imu_copy[i] = imu_data[i];
+    }
+    for (size_t imu = 1; imu < imu_index - 1; imu++) {
+        for (size_t sample = 0; sample < sample_index; sample++) {
+            for (size_t data = 0; data < data_entry; data++) {
+                float temp[3] = {imu_copy[(imu * (sample_index - 1) + sample) * data_entry + data], imu_copy[(imu * sample_index + sample) * data_entry + data], imu_copy[(imu * (sample_index + 1) + sample) * data_entry + data]};
+                imu_data[(imu * sample_index + sample) * data_entry + data] = get_median(temp, sizeof(temp)/sizeof(temp[0]));
+            }
         }
     }
+    delete[] imu_copy;
 }
 
 void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle) {
