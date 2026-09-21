@@ -15,6 +15,7 @@ enum class MessageType : uint8_t {
     DATA = 2,
     CALI_ZERO = 3,
     CALI_TRIGGER = 4,
+    PAUSE = 5,
 };
 
 // enum trigger_ref_index_t {
@@ -73,6 +74,7 @@ inline float trigger_reference[8][IMU_TRIGGER_LEN][3] = {};
 
 void send_ctrl_msg(const ctrl_msg_t &msg);
 void send_start_msg();
+void send_pause_msg();
 void send_cali_zero_msg();
 void send_trigger_ref_msg();
 void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);

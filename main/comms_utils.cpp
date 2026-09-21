@@ -267,6 +267,14 @@ void send_start_msg() {
     send_ctrl_msg(msg);
 }
 
+void send_pause_msg() {
+    ctrl_msg_t msg;
+    msg.timestamp = xTaskGetTickCount();
+    msg.index = 0;
+    msg.type = MessageType::PAUSE;
+    send_ctrl_msg(msg);
+}
+
 void send_cali_zero_msg() {
     ctrl_msg_t msg;
     msg.timestamp = xTaskGetTickCount();

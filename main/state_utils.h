@@ -1,4 +1,5 @@
-
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 typedef enum {
     SE_DOWN,
@@ -7,6 +8,8 @@ typedef enum {
     SE_RIGHT,
     SE_CLICK,
     SE_INIT_READY,
+    SE_SESSION_START,
+    SE_TRIGGER,
     SE_ERROR,
 } system_event_t;
 
@@ -14,6 +17,7 @@ typedef enum {
     SS_STARTUP,
     SS_IDLE,
     SS_SESSION,
+    SS_SESSION_PAUSE,
     SS_ERROR,
     SS_MENU,
 } system_state_t;
@@ -41,13 +45,18 @@ typedef enum {
 
 inline system_state_t current_state = SS_STARTUP;
 inline menu_selection_t current_menu = MENU_CALIBRATION;
+inline QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
 
 extern void start_calibration();
 extern void start_session();
+extern void pause_session();
+extern void end_session();
 
+void push_event(system_event_t event);
 void handle_menu_click();
 void handle_startup(system_event_t event);
 void handle_idle(system_event_t event);
 void handle_session(system_event_t event);
+void handle_session_pause(system_event_t event);
 void handle_error(system_event_t event);
 void handle_menu(system_event_t event);

@@ -48,21 +48,15 @@ static TaskHandle_t calibration_task_handle = NULL;
 static TaskHandle_t trigger_reference_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
+// session progress tracking
+static int exercise_count = 0;
 
-// -----------Event Queue-----------
-static QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
+static void reset_session_progress() {
+    exercise_count = 0;
+}
 
 // Dynamic Time Warping instances for gyro and accel for each IMU sensor
-static DTW dtw[8];
-
-/// @brief Push an event to the event queue from an ISR.
-/// @param e The event to be pushed.
-/// @note This function will be called from an ISR context, do not call ESP_LOG inside.
-static void push_event(system_event_t e) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xQueueSendFromISR(event_queue, &e, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
+static DTW dtws[8];
 
 static void IRAM_ATTR button_a_isr(void* arg) {
     push_event(SE_DOWN);
@@ -107,8 +101,6 @@ static void button_init() {
 #endif
 
 // ----------------WiFi----------------
-
-
 #ifdef DEVICE_PERIPHERAL
 
 static void handle_control_message(const ctrl_msg_t& msg) {
@@ -207,6 +199,10 @@ void trigger_reference_task(void *arg) {
             IMU_TRIGGER_LEN,
             6
         );
+        // assign reference samples to dtw objects
+        for (size_t i = 0; i < 8; i++) {
+            dtws[i].set_reference((float*)trigger_reference[i], IMU_TRIGGER_LEN, 3);
+        }
 #endif
     }
 }
@@ -353,6 +349,16 @@ void start_session() {
     xTaskNotifyGive(read_imu_task_handle);
 }
 
+void pause_session() {
+    send_pause_msg();
+    xTaskNotifyGive(read_imu_task_handle);
+}
+
+void end_session() {
+    pause_session();
+    reset_session_progress();
+}
+
 /// @brief Finite State Machine task that handles system states transitions based on events.
 /// @param arg 
 void fsm_task(void *arg) {
@@ -368,13 +374,17 @@ void fsm_task(void *arg) {
                 // Handle startup state
                 handle_startup(event);
                 break;
-            case SS_IDLE:
-                // Handle idle state
-                handle_idle(event);
-                break;
+            // case SS_IDLE:
+            //     // Handle idle state
+            //     handle_idle(event);
+            //     break;
             case SS_SESSION:
                 // Handle session state
                 handle_session(event);
+                break;
+            case SS_SESSION_PAUSE:
+                // Handle session pause state
+                handle_session_pause(event);
                 break;
             case SS_ERROR:
                 // Handle error state
