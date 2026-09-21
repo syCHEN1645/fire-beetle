@@ -11,6 +11,7 @@
 #include <algorithm>
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -44,6 +45,7 @@ float trigger_reference[8][IMU_TRIGGER_LEN][3] = {};
 
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
+adc_oneshot_unit_handle_t adc1_handle;
 
 static TaskHandle_t fsm_task_handle = NULL;
 static TaskHandle_t read_imu_task_handle = NULL;
@@ -465,6 +467,49 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
 
     ESP_LOGI("I2C", "I2C master initialized successfully");
 }
+
+// ------------------ADC read/write ------------------
+void adc_init() {
+    // Initialize ADC1
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = ADC_UNIT_1,
+        .clk_src = ADC_RTC_CLK_SRC_DEFAULT,
+        .ulp_mode = ADC_ULP_MODE_DISABLE
+    };
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(&init_config, &adc1_handle)
+    );
+
+    // Same configuration for both flex sensors
+    adc_oneshot_chan_cfg_t channel_config = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+
+    // flex sensors
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc1_handle,
+            FLEX_MID_ADC_CHANNEL,
+            &channel_config
+        )
+    );
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc1_handle,
+            FLEX_IND_ADC_CHANNEL,
+            &channel_config
+        )
+    );
+
+#ifdef DEVICE_CENTRAL
+    // TODO: init joystick pins
+#endif
+
+    ESP_LOGI("FLEX", "Flex sensor ADC initialized");
+}
+
 
 // ------------------Events control ------------------
 
