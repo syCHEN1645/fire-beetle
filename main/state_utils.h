@@ -43,8 +43,8 @@ typedef enum {
     // add more settings menu options here if needed
 } menu_selection_t;
 
-inline system_state_t current_state = SS_STARTUP;
-inline menu_selection_t current_menu = MENU_CALIBRATION;
+inline volatile system_state_t current_state = SS_STARTUP;
+inline volatile menu_selection_t current_menu = MENU_CALIBRATION;
 inline QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
 
 extern void start_calibration();

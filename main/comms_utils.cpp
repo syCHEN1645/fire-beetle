@@ -211,29 +211,12 @@ void espnow_receive_callback(
     // imu_index in trigger_reference:
     // 0: LEFT_LOWER_ACCEL, 1: LEFT_LOWER_GYRO, 2: LEFT_UPPER_ACCEL, 3: LEFT_UPPER_GYRO,
     // 4: RIGHT_LOWER_ACCEL, 5: RIGHT_LOWER_GYRO, 6: RIGHT_UPPER_ACCEL, 7: RIGHT_UPPER_GYRO
-    switch (imu_msg.type) {
-        case MessageType::DATA:
-            // store the received imu message into the all_imu_data buffer
-            all_imu_data[imu_index][imu_msg.index][0] = imu_msg.accel_x;
-            all_imu_data[imu_index][imu_msg.index][1] = imu_msg.accel_y;
-            all_imu_data[imu_index][imu_msg.index][2] = imu_msg.accel_z;
-            all_imu_data[imu_index][imu_msg.index][3] = imu_msg.gyro_x;
-            all_imu_data[imu_index][imu_msg.index][4] = imu_msg.gyro_y;
-            all_imu_data[imu_index][imu_msg.index][5] = imu_msg.gyro_z;
-            break;
-        case MessageType::CALI_TRIGGER:
-            // store into the trigger_reference array
-            trigger_reference[imu_index * 2][imu_msg.index][0] = imu_msg.accel_x;
-            trigger_reference[imu_index * 2][imu_msg.index][1] = imu_msg.accel_y;
-            trigger_reference[imu_index * 2][imu_msg.index][2] = imu_msg.accel_z;
-            trigger_reference[imu_index * 2 + 1][imu_msg.index][0] = imu_msg.gyro_x;
-            trigger_reference[imu_index * 2 + 1][imu_msg.index][1] = imu_msg.gyro_y;
-            trigger_reference[imu_index * 2 + 1][imu_msg.index][2] = imu_msg.gyro_z;
-            break;
-        default:
-            ESP_LOGW("ESP-NOW", "Received unknown IMU message type");
-            break;
-    }
+    all_imu_data[imu_index][imu_msg.index][0] = imu_msg.accel_x;
+    all_imu_data[imu_index][imu_msg.index][1] = imu_msg.accel_y;
+    all_imu_data[imu_index][imu_msg.index][2] = imu_msg.accel_z;
+    all_imu_data[imu_index][imu_msg.index][3] = imu_msg.gyro_x;
+    all_imu_data[imu_index][imu_msg.index][4] = imu_msg.gyro_y;
+    all_imu_data[imu_index][imu_msg.index][5] = imu_msg.gyro_z;
 }
 
 void espnow_send_callback(
@@ -322,7 +305,7 @@ void wifi_event_handler(
     }
 }
 
-void send_imu_data_to_laptop() {
+void send_imu_data_to_laptop(float all_imu_data[4][IMU_DATA_LEN][6]) {
     esp_http_client_config_t config = {};
     config.url = DATA_COLLECT_URL;
 

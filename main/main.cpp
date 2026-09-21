@@ -38,6 +38,9 @@ uint8_t imu_data_buffer[12];
 float imu_zero_calibration[6];
 float gyro_offset[3];
 float accel_rotation[3][3];
+float all_imu_data[4][IMU_DATA_LEN][6] = {};
+size_t oldest_index = 0;
+float trigger_reference[8][IMU_TRIGGER_LEN][3] = {};
 
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
@@ -50,13 +53,17 @@ static TaskHandle_t trigger_reference_task_handle = NULL;
 #ifdef DEVICE_CENTRAL
 // session progress tracking
 static int exercise_count = 0;
+// TODO: Adjust trigger thresholds based on empirical data
+static float trigger_thresholds[8] = {1, 2, 3, 4, 5, 6, 7, 8};
 
 static void reset_session_progress() {
     exercise_count = 0;
+    // reset imu data buffer
+    oldest_index = 0;
+    for (int i = 0; i < 4 * IMU_DATA_LEN * 6; i++) {
+        *((float*)all_imu_data[0] + i) = 0;
+    }
 }
-
-// Dynamic Time Warping instances for gyro and accel for each IMU sensor
-static DTW dtws[8];
 
 static void IRAM_ATTR button_a_isr(void* arg) {
     push_event(SE_DOWN);
@@ -138,6 +145,22 @@ void recv_from_ar() {
     // expect instruction messages that trigger state change
 }
 
+#ifdef DEVICE_CENTRAL
+// ----------------DTW----------------
+// Dynamic Time Warping instances for gyro and accel for each IMU sensor
+static DTW dtws[8];
+
+void init_dtw() {
+    for (size_t i = 0; i < 8; ++i) {
+        dtws[i].set_reference(
+            &trigger_reference[i][0][0],
+            IMU_TRIGGER_LEN,
+            3
+        );
+    }
+}
+#endif
+
 /// @brief Task to collect IMU data for trigger reference before session starts. Reuse IMU data buffer. 
 void trigger_reference_task(void *arg) {
     while (true) {
@@ -207,14 +230,131 @@ void trigger_reference_task(void *arg) {
     }
 }
 
+bool if_dtw_trigger() {
+    // 0: IMU0 accel
+    // 1: IMU0 gyro
+    // 2: IMU1 accel
+    // 3: IMU1 gyro ...
+    float trigger_window[8][IMU_TRIGGER_LEN][3];
+
+    // the newest sample is at: oldest_index - 1
+    for (size_t imu = 0; imu < 4; ++imu) {
+        // add IMU_DATA_LEN to ensure positive modulo result
+        size_t start_index = (oldest_index + IMU_DATA_LEN - IMU_TRIGGER_LEN) % IMU_DATA_LEN;
+
+        for (size_t sample = 0; sample < IMU_TRIGGER_LEN; ++sample) {
+            size_t buffer_index = (start_index + sample) % IMU_DATA_LEN;
+
+            // Acceleration
+            trigger_window[imu * 2][sample][0] = all_imu_data[imu][buffer_index][0];
+            trigger_window[imu * 2][sample][1] = all_imu_data[imu][buffer_index][1];
+            trigger_window[imu * 2][sample][2] = all_imu_data[imu][buffer_index][2];
+
+            // Gyroscope
+            trigger_window[imu * 2 + 1][sample][0] = all_imu_data[imu][buffer_index][3];
+            trigger_window[imu * 2 + 1][sample][1] = all_imu_data[imu][buffer_index][4];
+            trigger_window[imu * 2 + 1][sample][2] = all_imu_data[imu][buffer_index][5];
+        }
+    }
+
+    // run all 8 dtw comparisons
+    // ensure at least 6 matches
+    int non_matches = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        float dist = dtws[i].compute(&trigger_window[i][0][0], IMU_TRIGGER_LEN, 3);
+
+        ESP_LOGI(
+            "DTW",
+            "DTW[%d] distance = %f, threshold = %f",
+            (int)i,
+            dist,
+            trigger_thresholds[i]
+        );
+
+        if (dist >= trigger_thresholds[i]) {
+            non_matches++;
+        }
+    }
+
+    return non_matches <= 2;
+}
+
+
+void sense_trigger_task(void *arg) {
+    while (true) {
+        // Wait until the session begins.
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        int64_t next_compare_time = esp_timer_get_time() + TRIGGER_INTERVAL_MS * 1000;
+        int64_t trigger_lock_until = 0;
+
+        while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
+            int64_t now = esp_timer_get_time();
+            // Perform a DTW comparison every 300 ms,
+            if (now >= next_compare_time && now >= trigger_lock_until) {
+                if (if_dtw_trigger()) {
+                    ESP_LOGI(
+                        "TRIGGER",
+                        "Trigger movement detected!"
+                    );
+                    // debounce for 1 second.
+                    trigger_lock_until = now + TRIGGER_LOCKOUT_MS * 1000;
+                    // send trigger event
+                    push_event(system_event_t::SE_TRIGGER);
+                }
+                // next comparison after 300 ms
+                next_compare_time = now + TRIGGER_INTERVAL_MS * 1000;
+            }
+
+            // Don't busy-loop.
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+}
+
+void inference_data_task(void *arg) {
+    while (true) {
+        // Wait until the session begins.
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
+            // Take a snapshot of the latest 3 seconds of IMU data.
+            float inference_window[4][IMU_DATA_LEN][6];
+            size_t start_index = (oldest_index + IMU_DATA_LEN - IMU_TRIGGER_LEN) % IMU_DATA_LEN;
+
+            for (size_t imu = 0; imu < 4; ++imu) {
+                for (size_t sample = 0; sample < IMU_TRIGGER_LEN; ++sample) {
+                    size_t buffer_index = (start_index + sample) % IMU_DATA_LEN;
+                    for (size_t i = 0; i < 6; ++i) {
+                        inference_window[imu][sample][i] = all_imu_data[imu][buffer_index][i];
+                    }
+                }
+            }
+
+            // TODO: send to ultra96
+            send_imu_data_to_laptop(inference_window);
+            // Wait 2 seconds before requesting another window.
+            for (int i = 0; i < 40; ++i) {
+                // Check every 50 ms whether the session has ended.
+                if (!(current_state == SS_SESSION ||
+                      current_state == SS_SESSION_PAUSE)) {
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+        }
+    }
+}
+
+/// @brief Task function for reading IMU data continuously during a session.
+/// @param arg 
 void read_imu_task(void *arg) {
     while (true) {
         // put it to suspension upon creation
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        uint64_t start_time = esp_timer_get_time();
-        imu_data_collection_count = 0;
         
-        while (imu_data_collection_count < IMU_DATA_LEN) {
+        // only run during a session (including pause)
+        while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
             esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
             if (err != ESP_OK) {
                 ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
@@ -227,14 +367,14 @@ void read_imu_task(void *arg) {
 
 #ifdef DEVICE_CENTRAL
             for (int i = 0; i < 6; i++) {
-                all_imu_data[0][imu_data_collection_count][i] = imu_data[i];
+                all_imu_data[0][oldest_index][i] = imu_data[i];
                 ESP_LOGI("IMU", "%f", imu_data[i]);
             }
 #endif
 
 #ifdef DEVICE_PERIPHERAL
             for (int i = 0; i < 6; i++) {
-                // imu_data_collection[imu_data_collection_count][i] = imu_data[i];
+                // imu_data_collection[oldest_index][i] = imu_data[i];
                 ESP_LOGI("IMU", "%f", imu_data[i]);
             }
             // send the collected IMU data to the central device via ESP-NOW
@@ -245,7 +385,7 @@ void read_imu_task(void *arg) {
             imu_msg.gyro_x = imu_data[3];
             imu_msg.gyro_y = imu_data[4];
             imu_msg.gyro_z = imu_data[5];
-            imu_msg.index = imu_data_collection_count;
+            imu_msg.index = oldest_index;
             imu_msg.type = MessageType::DATA;
             esp_err_t result = esp_now_send(
                 CENTRAL_MAC,
@@ -256,23 +396,17 @@ void read_imu_task(void *arg) {
                 ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
             }
 #endif
-            imu_data_collection_count++;
+            oldest_index = (oldest_index + 1) % IMU_DATA_LEN;
+            // clear in advance the new oldest index
+            for (int j = 0; j < 4; j++) {
+                for (int i = 0; i < 6; i++) {
+                    all_imu_data[j][oldest_index][i] = 0.0f;
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
         }
 #ifdef DEVICE_CENTRAL
-        // send only after 3 seconds passed
-        while (esp_timer_get_time() - start_time < SINGLE_ACTION_TIME_MS * 1000) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-        // TODO: use semaphore to lock the array to stop late transmissions
-        median_smooth_lsm6dsox_imu_data(
-            (float*)all_imu_data,
-            4,
-            IMU_DATA_LEN,
-            6
-        );
-        send_imu_data_to_laptop();
+        // send_imu_data_to_laptop();
 #endif
     }
 }
@@ -350,12 +484,13 @@ void start_session() {
 }
 
 void pause_session() {
-    send_pause_msg();
-    xTaskNotifyGive(read_imu_task_handle);
+    // pause inference task, but keep trigger reference task running
 }
 
 void end_session() {
+    send_pause_msg();
     pause_session();
+    xTaskNotifyGive(read_imu_task_handle);
     reset_session_progress();
 }
 

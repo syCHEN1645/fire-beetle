@@ -62,6 +62,8 @@ void espnow_send_callback(
 void espnow_init(uint8_t channel);
 
 #ifdef DEVICE_CENTRAL
+extern float all_imu_data[4][IMU_DATA_LEN][6];
+
 inline const uint8_t BOARDCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 inline const uint8_t LEFT_LOWER_MAC[6] = LEFT_LOWER_MAC_ADDR;
 inline const uint8_t LEFT_UPPER_MAC[6] = LEFT_UPPER_MAC_ADDR;
@@ -69,16 +71,13 @@ inline const uint8_t RIGHT_LOWER_MAC[6] = RIGHT_LOWER_MAC_ADDR;
 inline const uint8_t RIGHT_UPPER_MAC[6] = RIGHT_UPPER_MAC_ADDR;
 inline uint16_t imu_data_collection_count = 0;
 
-inline float all_imu_data[4][IMU_DATA_LEN][6] = {};
-inline float trigger_reference[8][IMU_TRIGGER_LEN][3] = {};
-
 void send_ctrl_msg(const ctrl_msg_t &msg);
 void send_start_msg();
 void send_pause_msg();
 void send_cali_zero_msg();
 void send_trigger_ref_msg();
 void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
-void send_imu_data_to_laptop();
+void send_imu_data_to_laptop(float all_imu_data[4][IMU_DATA_LEN][6]);
 #endif
 
 #ifdef DEVICE_PERIPHERAL
