@@ -67,49 +67,49 @@ static void reset_session_progress() {
     }
 }
 
-static void IRAM_ATTR button_a_isr(void* arg) {
-    push_event(SE_DOWN);
-}
+// static void IRAM_ATTR button_a_isr(void* arg) {
+//     push_event(SE_DOWN);
+// }
 
-static void IRAM_ATTR button_b_isr(void* arg) {
-    push_event(SE_CLICK);
-}
+// static void IRAM_ATTR button_b_isr(void* arg) {
+//     push_event(SE_CLICK);
+// }
 
 static void IRAM_ATTR joystick_button_isr(void* arg) {
     push_event(SE_CLICK);
 }
 
-static void button_init() {
-    gpio_config_t io_conf{};
+// static void button_init() {
+//     gpio_config_t io_conf{};
 
-    io_conf.pin_bit_mask = (1ULL << START_BUTTON_PIN) | (1ULL << CALI_BUTTON_PIN);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
+//     io_conf.pin_bit_mask = (1ULL << START_BUTTON_PIN) | (1ULL << CALI_BUTTON_PIN);
+//     io_conf.mode = GPIO_MODE_INPUT;
+//     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+//     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+//     io_conf.intr_type = GPIO_INTR_NEGEDGE;
 
-    ESP_ERROR_CHECK(gpio_config(&io_conf));
+//     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
-    ESP_ERROR_CHECK(
-        gpio_install_isr_service(0)
-    );
+//     ESP_ERROR_CHECK(
+//         gpio_install_isr_service(0)
+//     );
 
-    ESP_ERROR_CHECK(
-        gpio_isr_handler_add(
-            START_BUTTON_PIN,
-            button_a_isr,
-            nullptr
-        )
-    );
+//     ESP_ERROR_CHECK(
+//         gpio_isr_handler_add(
+//             START_BUTTON_PIN,
+//             button_a_isr,
+//             nullptr
+//         )
+//     );
 
-    ESP_ERROR_CHECK(
-        gpio_isr_handler_add(
-            CALI_BUTTON_PIN,
-            button_b_isr,
-            nullptr
-        )
-    );
-}
+//     ESP_ERROR_CHECK(
+//         gpio_isr_handler_add(
+//             CALI_BUTTON_PIN,
+//             button_b_isr,
+//             nullptr
+//         )
+//     );
+// }
 
 #endif
 

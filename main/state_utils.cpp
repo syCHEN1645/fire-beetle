@@ -146,13 +146,24 @@ void handle_menu(system_event_t event) {
                 current_menu = static_cast<menu_selection_t>(std::max((current_menu + 1) % 14, 12));
             }
             break;
+        case SE_UP:
+            ESP_LOGI("FSM", "SS_MENU state, received SE_UP event");
+            // menu selection moves up by 1, loop back over limit
+            if (current_menu >= 0 && current_menu < 4) {
+                current_menu = static_cast<menu_selection_t>((current_menu + 3) % 4);
+            } else if (current_menu >= 4 && current_menu < 12) {
+                current_menu = static_cast<menu_selection_t>(std::max((current_menu + 11) % 12, 4));
+            } else if (current_menu >= 12 && current_menu < 14) {
+                current_menu = static_cast<menu_selection_t>(std::max((current_menu + 13) % 14, 12));
+            }
+            break;
         case SE_CLICK:
             ESP_LOGI("FSM", "SS_MENU state, received SE_CLICK event");
             // "click" on the current menu option
             handle_menu_click();
             break;
         case SE_LEFT:
-            // TODO: dont have this button yet
+            // go back to previous layer
             ESP_LOGI("FSM", "SS_MENU state, received SE_LEFT event");
             if (current_menu >= 4 && current_menu < 12) {
                 current_menu = MENU_SESSION;
