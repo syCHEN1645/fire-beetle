@@ -75,6 +75,10 @@ static void IRAM_ATTR button_b_isr(void* arg) {
     push_event(SE_CLICK);
 }
 
+static void IRAM_ATTR joystick_button_isr(void* arg) {
+    push_event(SE_CLICK);
+}
+
 static void button_init() {
     gpio_config_t io_conf{};
 
@@ -504,13 +508,88 @@ void adc_init() {
     );
 
 #ifdef DEVICE_CENTRAL
-    // TODO: init joystick pins
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc1_handle,
+            JOYSTICK_X_CHANNEL,
+            &channel_config
+        )
+    );
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc1_handle,
+            JOYSTICK_Y_CHANNEL,
+            &channel_config
+        )
+    );
 #endif
 
     ESP_LOGI("FLEX", "Flex sensor ADC initialized");
 }
 
+// -------------- Joystick ---------------
+#ifdef DEVICE_CENTRAL
+void joystick_task() {
+    while (true) {
+        // Read joystick X and Y positions
+        int x_val, y_val;
+        ESP_ERROR_CHECK(
+            adc_oneshot_read(adc1_handle, JOYSTICK_X_CHANNEL, &x_val)
+        );
+        ESP_ERROR_CHECK(
+            adc_oneshot_read(adc1_handle, JOYSTICK_Y_CHANNEL, &y_val)
+        );
 
+        // int64_t now_us = esp_timer_get_time();
+
+        bool triggered = true;
+        if (x_val < JOY_LOW_THRESHOLD) {
+            push_event(SE_DOWN);
+        } else if (x_val > JOY_HIGH_THRESHOLD) {
+            push_event(SE_UP);
+        } else if (y_val < JOY_LOW_THRESHOLD) {
+            push_event(SE_LEFT);
+        } else if (y_val > JOY_HIGH_THRESHOLD) {
+            push_event(SE_RIGHT);
+        } else {
+            // joystick is in the neutral position
+            triggered = false;
+        }
+
+        if (triggered) {
+            // debounce 500 ms
+            vTaskDelay(pdMS_TO_TICKS(500));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+}
+
+/// @brief Initialize the joystick button.
+void joystick_init() {
+    gpio_config_t io_conf{};
+
+    io_conf.pin_bit_mask = (1ULL << JOYSTICK_BUTTON_PIN);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(0)
+    );
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            JOYSTICK_BUTTON_PIN,
+            joystick_button_isr,
+            nullptr
+        )
+    );
+}
+#endif
 // ------------------Events control ------------------
 
 void start_calibration() {
@@ -643,7 +722,9 @@ extern "C" void app_main() {
 
 #ifdef DEVICE_CENTRAL
     // attach to interrupt for buttons
-    button_init();
+    // button_init();
+    adc_init();
+    joystick_init();
 #endif
 
     // create imu read task
@@ -695,6 +776,22 @@ extern "C" void app_main() {
     );
 
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        int joystick_x;
+        int joystick_y;
+
+        ESP_ERROR_CHECK(adc_oneshot_read(
+            adc1_handle,
+            JOYSTICK_X_CHANNEL,
+            &joystick_x
+        ));
+
+        ESP_ERROR_CHECK(adc_oneshot_read(
+            adc1_handle,
+            JOYSTICK_Y_CHANNEL,
+            &joystick_y
+        ));
+
+        ESP_LOGI("JOYSTICK", "X=%d Y=%d", joystick_x, joystick_y);
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
