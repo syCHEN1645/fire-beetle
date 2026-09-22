@@ -34,6 +34,7 @@
 #include "hw_config.h"
 #include "func_config.h"
 #include "adc_utils.h"
+#include "pwm_ctrl_utils.h"
 #include "imu_utils.h"
 #include "comms_utils.h"
 #ifdef DEVICE_CENTRAL
@@ -387,6 +388,153 @@ void joystick_task() {
 }
 
 #endif
+
+void handle_actuator_by_event(actuator_event_t event) {
+    // in case of preemption, stop any ongoing actuator actions before handling the new event
+#ifdef DEVICE_ARM
+    motor_stop();
+#endif
+    switch (event) {
+        case AE_CLICK:
+            // Flash blue by 200 ms
+            led_set_color(0, 0, 255);
+#ifdef DEVICE_ARM
+            // gentle vibration for 200 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(200));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
+        case AE_ERROR:
+            // Flash red at 100 ms 3 times
+#ifdef DEVICE_ARM
+            // strong vibration for 500 ms
+            motor_strong();
+#endif
+            led_set_color(255, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            for (int i = 0; i < 2; ++i) {
+                led_set_color(0, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                led_set_color(255, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
+        case AE_COUNT:
+            // Flash green by 1000 ms
+            led_set_color(0, 255, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 500 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(500));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(500));
+            led_set_color(0, 0, 0);
+            break;
+        case AE_OK:
+            // Flash blue at 100 ms 3 times
+#ifdef DEVICE_ARM
+            // gentle vibration for 300 ms
+            motor_gentle();
+#endif
+            led_set_color(0, 0, 255);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            for (int i = 0; i < 2; ++i) {
+                led_set_color(0, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                led_set_color(0, 0, 255);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
+        case AE_ACTION:
+            led_set_color(255, 255, 255);
+#ifdef DEVICE_ARM
+            // gentle vibration for 300 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(300));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            // decay white in 2600 ms
+            // 200 * 13 ms
+            for (int i = 0; i < 200; i++) {
+                led_set_color(255 - i, 255 - i, 255 - i);
+                vTaskDelay(pdMS_TO_TICKS(13));
+            }
+            led_set_color(0, 0, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 300 ms again to notify end
+            motor_gentle();
+            vTaskDelay(pdMS_TO_TICKS(300));
+            motor_stop();
+#endif
+            break;
+        default:
+            break;
+    }
+}
+
+void handle_actuator_by_state(system_state_t state) {
+    switch (state) {
+        case SS_STARTUP:
+            // flash dimmed blue at 250 ms
+            led_set_color(0, 0, 128);
+            vTaskDelay(pdMS_TO_TICKS(250));
+            led_set_color(0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(250));
+            break;
+        case SS_MENU:
+            // shine dimmed blue
+            led_set_color(0, 0, 128);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+        case SS_SESSION_PAUSE:
+            // shine dimmed yellow
+            led_set_color(128, 128, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+        case SS_ERROR:
+            // shine dimmed red
+            led_set_color(128, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+        default:
+            break;
+    }
+}
+
+void actuator_task(void *arg) {
+    actuator_event_t event;
+    while (true) {
+        // Wait for either:
+        // 1. a special event
+        // 2. timeout for normal state behaviour
+        if (xQueueReceive(
+            actuator_queue, 
+            &event,
+            pdMS_TO_TICKS(ACTUATOR_EVENT_TIMEOUT_MS)
+        ) == pdTRUE) {
+            handle_actuator_by_event(event);
+        } else {
+            handle_actuator_by_state(current_state);
+        }
+    }
+}
 
 /// @brief Task function for reading IMU data continuously during a session.
 /// @param arg 

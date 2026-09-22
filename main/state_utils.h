@@ -10,6 +10,7 @@ typedef enum {
     SE_INIT_READY,
     SE_SESSION_START,
     SE_TRIGGER,
+    SE_COUNT,
     SE_ERROR,
 } system_event_t;
 

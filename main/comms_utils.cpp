@@ -210,8 +210,8 @@ void espnow_receive_callback(
     // imu_index in all_imu_data:
     // 0: LEFT_LOWER, 1: LEFT_UPPER, 2: RIGHT_LOWER, 3: RIGHT_UPPER
     // imu_index in trigger_reference:
-    // 0: LEFT_LOWER_ACCEL, 1: LEFT_LOWER_GYRO, 2: LEFT_UPPER_ACCEL, 3: LEFT_UPPER_GYRO,
-    // 4: RIGHT_LOWER_ACCEL, 5: RIGHT_LOWER_GYRO, 6: RIGHT_UPPER_ACCEL, 7: RIGHT_UPPER_GYRO
+    // 0: LEFT_LOWER_GYRO, 1: LEFT_LOWER_ACCEL, 2: LEFT_UPPER_GYRO, 3: LEFT_UPPER_ACCEL,
+    // 4: RIGHT_LOWER_GYRO, 5: RIGHT_LOWER_ACCEL, 6: RIGHT_UPPER_GYRO, 7: RIGHT_UPPER_ACCEL
     all_imu_data[imu_index][imu_msg.index][0] = imu_msg.gyro_x;
     all_imu_data[imu_index][imu_msg.index][1] = imu_msg.gyro_y;
     all_imu_data[imu_index][imu_msg.index][2] = imu_msg.gyro_z;

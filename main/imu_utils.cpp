@@ -86,7 +86,7 @@ esp_err_t read_from_lsm6dsox_imu(i2c_master_dev_handle_t dev_handle, uint8_t *re
 }
 
 /// @brief Parses the raw IMU data from the sensor.
-/// @param imu_data Array to store the parsed IMU data: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z.
+/// @param raw_buffer Array to store the parsed IMU data: gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z.
 /// @return None
 void parse_lsm6dsox_imu_data(uint8_t bytes_buffer[12], float raw_buffer[6]) {
     // cast to int16_t to preserve sign
@@ -102,8 +102,8 @@ void parse_lsm6dsox_imu_data(uint8_t bytes_buffer[12], float raw_buffer[6]) {
     }
 }
 
-/// @brief Performs zero calibration on 1 piece of IMU data. Gyro minus offset. Accel dot by R matrix. 
-/// @param imu_data Array containing the IMU data: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z.
+/// @brief Performs zero calibration on 1 piece of IMU data. Gyro minus offset. Accel dot by R matrix.
+/// @param imu_data Array containing the IMU data: gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z.
 void zero_calibrate_lsm6dsox_imu_data (float imu_data[6]) {
     imu_data[0] -= gyro_offset[0];
     imu_data[1] -= gyro_offset[1];
