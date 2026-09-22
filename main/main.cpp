@@ -3,15 +3,22 @@
 #error "Defined 2 roles"
 #endif
 
+#if defined(DEVICE_CENTRAL) && !defined(DEVICE_HAND)
+#error "Central device needs to be a hand device"
+#endif
+
 #if !defined(DEVICE_CENTRAL) && !defined(DEVICE_PERIPHERAL)
-#error "No role defined"
+#error "No central/peripheral role defined"
+#endif
+
+#if !defined(DEVICE_HAND) && !defined(DEVICE_ARM)
+#error "No hand/arm role defined"
 #endif
 
 #include <stdio.h>
 #include <algorithm>
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
-#include "esp_adc/adc_oneshot.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -26,6 +33,7 @@
 
 #include "hw_config.h"
 #include "func_config.h"
+#include "adc_utils.h"
 #include "imu_utils.h"
 #include "comms_utils.h"
 #ifdef DEVICE_CENTRAL
@@ -35,20 +43,23 @@
 
 // IMU data buffers
 uint8_t imu_data_buffer[12];
+float all_imu_data[4][IMU_DATA_LEN][6] = {};
 // IMU zero calibration data (double to avoid integer division)
 float imu_zero_calibration[6];
 float gyro_offset[3];
 float accel_rotation[3][3];
-float all_imu_data[4][IMU_DATA_LEN][6] = {};
+// trigger reference buffer
 size_t oldest_index = 0;
 float trigger_reference[8][IMU_TRIGGER_LEN][3] = {};
+// flex sensor data
+bool all_flex_data[2][IMU_DATA_LEN][2] = {};
 
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
 adc_oneshot_unit_handle_t adc1_handle;
 
 static TaskHandle_t fsm_task_handle = NULL;
-static TaskHandle_t read_imu_task_handle = NULL;
+static TaskHandle_t read_sensor_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
 static TaskHandle_t trigger_reference_task_handle = NULL;
 
@@ -67,49 +78,34 @@ static void reset_session_progress() {
     }
 }
 
-// static void IRAM_ATTR button_a_isr(void* arg) {
-//     push_event(SE_DOWN);
-// }
-
-// static void IRAM_ATTR button_b_isr(void* arg) {
-//     push_event(SE_CLICK);
-// }
-
 static void IRAM_ATTR joystick_button_isr(void* arg) {
     push_event(SE_CLICK);
 }
 
-// static void button_init() {
-//     gpio_config_t io_conf{};
+/// @brief Initialize the joystick button.
+void joystick_init() {
+    gpio_config_t io_conf{};
 
-//     io_conf.pin_bit_mask = (1ULL << START_BUTTON_PIN) | (1ULL << CALI_BUTTON_PIN);
-//     io_conf.mode = GPIO_MODE_INPUT;
-//     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-//     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-//     io_conf.intr_type = GPIO_INTR_NEGEDGE;
+    io_conf.pin_bit_mask = (1ULL << JOYSTICK_BUTTON_PIN);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_NEGEDGE;
 
-//     ESP_ERROR_CHECK(gpio_config(&io_conf));
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
 
-//     ESP_ERROR_CHECK(
-//         gpio_install_isr_service(0)
-//     );
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(0)
+    );
 
-//     ESP_ERROR_CHECK(
-//         gpio_isr_handler_add(
-//             START_BUTTON_PIN,
-//             button_a_isr,
-//             nullptr
-//         )
-//     );
-
-//     ESP_ERROR_CHECK(
-//         gpio_isr_handler_add(
-//             CALI_BUTTON_PIN,
-//             button_b_isr,
-//             nullptr
-//         )
-//     );
-// }
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            JOYSTICK_BUTTON_PIN,
+            joystick_button_isr,
+            nullptr
+        )
+    );
+}
 
 #endif
 
@@ -121,7 +117,7 @@ static void handle_control_message(const ctrl_msg_t& msg) {
     {
         case MessageType::DATA:
             ESP_LOGI("RECV", "DATA received");
-            xTaskNotifyGive(read_imu_task_handle);
+            xTaskNotifyGive(read_sensor_task_handle);
             break;
 
         case MessageType::CALI_ZERO:
@@ -174,7 +170,7 @@ void trigger_reference_task(void *arg) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         // TODO: use semaphore to lock, this is accessed by multiple tasks
         imu_data_collection_count = 0;
-        // same as read_imu_task but store the samples locally on central device
+        // same as read_sensor_task but store the samples locally on central device
         while (imu_data_collection_count < IMU_TRIGGER_LEN) {
             esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
             if (err != ESP_OK) {
@@ -187,8 +183,10 @@ void trigger_reference_task(void *arg) {
             ESP_LOGI("IMU", "Collected IMU data:");
 #ifdef DEVICE_CENTRAL
             for (int i = 0; i < 4; i++) {
-                trigger_reference[0][imu_data_collection_count][i] = imu_data[i];
-                trigger_reference[1][imu_data_collection_count][i] = imu_data[i + 3];
+                // gyro
+                trigger_reference[i*2][imu_data_collection_count][i] = imu_data[i];
+                // accel
+                trigger_reference[i*2 + 1][imu_data_collection_count][i] = imu_data[i + 3];
                 ESP_LOGI("IMU", "%f", imu_data[i]);
             }
 #endif
@@ -199,12 +197,12 @@ void trigger_reference_task(void *arg) {
             }
             // send the collected IMU data to the central device via ESP-NOW
             imu_msg_t imu_msg;
-            imu_msg.accel_x = imu_data[0];
-            imu_msg.accel_y = imu_data[1];
-            imu_msg.accel_z = imu_data[2];
-            imu_msg.gyro_x = imu_data[3];
-            imu_msg.gyro_y = imu_data[4];
-            imu_msg.gyro_z = imu_data[5];
+            imu_msg.gyro_x = imu_data[0];
+            imu_msg.gyro_y = imu_data[1];
+            imu_msg.gyro_z = imu_data[2];
+            imu_msg.accel_x = imu_data[3];
+            imu_msg.accel_y = imu_data[4];
+            imu_msg.accel_z = imu_data[5];
             imu_msg.index = imu_data_collection_count;
             imu_msg.type = MessageType::CALI_TRIGGER;
             esp_err_t result = esp_now_send(
@@ -236,6 +234,7 @@ void trigger_reference_task(void *arg) {
     }
 }
 
+#ifdef DEVICE_CENTRAL
 bool if_dtw_trigger() {
     // 0: IMU0 accel
     // 1: IMU0 gyro
@@ -284,7 +283,6 @@ bool if_dtw_trigger() {
 
     return non_matches <= 2;
 }
-
 
 void sense_trigger_task(void *arg) {
     while (true) {
@@ -352,9 +350,47 @@ void inference_data_task(void *arg) {
     }
 }
 
+void joystick_task() {
+    while (true) {
+        // Read joystick X and Y positions
+        int x_val, y_val;
+        ESP_ERROR_CHECK(
+            adc_oneshot_read(adc1_handle, JOYSTICK_X_CHANNEL, &x_val)
+        );
+        ESP_ERROR_CHECK(
+            adc_oneshot_read(adc1_handle, JOYSTICK_Y_CHANNEL, &y_val)
+        );
+
+        // int64_t now_us = esp_timer_get_time();
+
+        bool triggered = true;
+        if (x_val < JOY_LOW_THRESHOLD) {
+            push_event(SE_DOWN);
+        } else if (x_val > JOY_HIGH_THRESHOLD) {
+            push_event(SE_UP);
+        } else if (y_val < JOY_LOW_THRESHOLD) {
+            push_event(SE_LEFT);
+        } else if (y_val > JOY_HIGH_THRESHOLD) {
+            push_event(SE_RIGHT);
+        } else {
+            // joystick is in the neutral position
+            triggered = false;
+        }
+
+        if (triggered) {
+            // debounce 500 ms
+            vTaskDelay(pdMS_TO_TICKS(500));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+}
+
+#endif
+
 /// @brief Task function for reading IMU data continuously during a session.
 /// @param arg 
-void read_imu_task(void *arg) {
+void read_sensor_task(void *arg) {
     while (true) {
         // put it to suspension upon creation
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -371,11 +407,36 @@ void read_imu_task(void *arg) {
             
             ESP_LOGI("IMU", "Collected IMU data:");
 
+#ifdef DEVICE_HAND
+            // read flex sensor data
+            int flex_mid_val = 0, flex_ind_val = 0;
+            ESP_ERROR_CHECK(
+                adc_oneshot_read(
+                    adc1_handle,
+                    FLEX_IND_ADC_CHANNEL,
+                    &flex_ind_val
+                )
+            );
+            ESP_ERROR_CHECK(
+                adc_oneshot_read(
+                    adc1_handle,
+                    FLEX_MID_ADC_CHANNEL,
+                    &flex_mid_val
+                )
+            );
+            bool flex_mid_bent = is_finger_bent((float)flex_mid_val);
+            bool flex_ind_bent = is_finger_bent((float)flex_ind_val);
+#endif
+
 #ifdef DEVICE_CENTRAL
             for (int i = 0; i < 6; i++) {
                 all_imu_data[0][oldest_index][i] = imu_data[i];
                 ESP_LOGI("IMU", "%f", imu_data[i]);
             }
+
+            // central device is a hand device
+            all_flex_data[0][oldest_index][0] = flex_mid_bent;
+            all_flex_data[0][oldest_index][1] = flex_ind_bent;
 #endif
 
 #ifdef DEVICE_PERIPHERAL
@@ -385,12 +446,16 @@ void read_imu_task(void *arg) {
             }
             // send the collected IMU data to the central device via ESP-NOW
             imu_msg_t imu_msg;
-            imu_msg.accel_x = imu_data[0];
-            imu_msg.accel_y = imu_data[1];
-            imu_msg.accel_z = imu_data[2];
-            imu_msg.gyro_x = imu_data[3];
-            imu_msg.gyro_y = imu_data[4];
-            imu_msg.gyro_z = imu_data[5];
+            imu_msg.gyro_x = imu_data[0];
+            imu_msg.gyro_y = imu_data[1];
+            imu_msg.gyro_z = imu_data[2];
+            imu_msg.accel_x = imu_data[3];
+            imu_msg.accel_y = imu_data[4];
+            imu_msg.accel_z = imu_data[5];
+#ifdef DEVICE_HAND
+            imu_msg.flex_mid = flex_mid_bent;
+            imu_msg.flex_ind = flex_ind_bent;
+#endif
             imu_msg.index = oldest_index;
             imu_msg.type = MessageType::DATA;
             esp_err_t result = esp_now_send(
@@ -472,7 +537,6 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
     ESP_LOGI("I2C", "I2C master initialized successfully");
 }
 
-// ------------------ADC read/write ------------------
 void adc_init() {
     // Initialize ADC1
     adc_oneshot_unit_init_cfg_t init_config = {
@@ -491,6 +555,7 @@ void adc_init() {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
 
+#ifdef DEVICE_HAND
     // flex sensors
     ESP_ERROR_CHECK(
         adc_oneshot_config_channel(
@@ -506,6 +571,7 @@ void adc_init() {
             &channel_config
         )
     );
+#endif
 
 #ifdef DEVICE_CENTRAL
     ESP_ERROR_CHECK(
@@ -527,71 +593,9 @@ void adc_init() {
     ESP_LOGI("FLEX", "Flex sensor ADC initialized");
 }
 
-// -------------- Joystick ---------------
-#ifdef DEVICE_CENTRAL
-void joystick_task() {
-    while (true) {
-        // Read joystick X and Y positions
-        int x_val, y_val;
-        ESP_ERROR_CHECK(
-            adc_oneshot_read(adc1_handle, JOYSTICK_X_CHANNEL, &x_val)
-        );
-        ESP_ERROR_CHECK(
-            adc_oneshot_read(adc1_handle, JOYSTICK_Y_CHANNEL, &y_val)
-        );
-
-        // int64_t now_us = esp_timer_get_time();
-
-        bool triggered = true;
-        if (x_val < JOY_LOW_THRESHOLD) {
-            push_event(SE_DOWN);
-        } else if (x_val > JOY_HIGH_THRESHOLD) {
-            push_event(SE_UP);
-        } else if (y_val < JOY_LOW_THRESHOLD) {
-            push_event(SE_LEFT);
-        } else if (y_val > JOY_HIGH_THRESHOLD) {
-            push_event(SE_RIGHT);
-        } else {
-            // joystick is in the neutral position
-            triggered = false;
-        }
-
-        if (triggered) {
-            // debounce 500 ms
-            vTaskDelay(pdMS_TO_TICKS(500));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(20));
-        }
-    }
-}
-
-/// @brief Initialize the joystick button.
-void joystick_init() {
-    gpio_config_t io_conf{};
-
-    io_conf.pin_bit_mask = (1ULL << JOYSTICK_BUTTON_PIN);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-
-    ESP_ERROR_CHECK(gpio_config(&io_conf));
-
-    ESP_ERROR_CHECK(
-        gpio_install_isr_service(0)
-    );
-
-    ESP_ERROR_CHECK(
-        gpio_isr_handler_add(
-            JOYSTICK_BUTTON_PIN,
-            joystick_button_isr,
-            nullptr
-        )
-    );
-}
-#endif
 // ------------------Events control ------------------
 
+#ifdef DEVICE_CENTRAL
 void start_calibration() {
     send_cali_zero_msg();
     xTaskNotifyGive(calibration_task_handle);
@@ -604,7 +608,7 @@ void start_trigger_reference() {
 
 void start_session() {
     send_start_msg();
-    xTaskNotifyGive(read_imu_task_handle);
+    xTaskNotifyGive(read_sensor_task_handle);
 }
 
 void pause_session() {
@@ -614,7 +618,7 @@ void pause_session() {
 void end_session() {
     send_pause_msg();
     pause_session();
-    xTaskNotifyGive(read_imu_task_handle);
+    xTaskNotifyGive(read_sensor_task_handle);
     reset_session_progress();
 }
 
@@ -659,6 +663,8 @@ void fsm_task(void *arg) {
         }
     }
 }
+
+#endif
 
 extern "C" void app_main() {
     // initialize I2C master
@@ -729,12 +735,12 @@ extern "C" void app_main() {
 
     // create imu read task
     xTaskCreatePinnedToCore(
-        read_imu_task,
+        read_sensor_task,
         "Read IMU Task",
         4096,
         NULL,
         5,
-        &read_imu_task_handle,
+        &read_sensor_task_handle,
         tskNO_AFFINITY
     );
     // create imu calibration task

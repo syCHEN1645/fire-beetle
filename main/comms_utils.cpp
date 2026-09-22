@@ -194,6 +194,7 @@ void espnow_receive_callback(
     size_t imu_index = SIZE_MAX;
     // check the mac address of the sender
     if (memcmp(recv_info->src_addr, LEFT_LOWER_MAC, 6) == 0) {
+        // this condition should never happen because this itself is the central device
         imu_index = 0;
     } else if (memcmp(recv_info->src_addr, LEFT_UPPER_MAC, 6) == 0) {
         imu_index = 1;
@@ -211,12 +212,18 @@ void espnow_receive_callback(
     // imu_index in trigger_reference:
     // 0: LEFT_LOWER_ACCEL, 1: LEFT_LOWER_GYRO, 2: LEFT_UPPER_ACCEL, 3: LEFT_UPPER_GYRO,
     // 4: RIGHT_LOWER_ACCEL, 5: RIGHT_LOWER_GYRO, 6: RIGHT_UPPER_ACCEL, 7: RIGHT_UPPER_GYRO
-    all_imu_data[imu_index][imu_msg.index][0] = imu_msg.accel_x;
-    all_imu_data[imu_index][imu_msg.index][1] = imu_msg.accel_y;
-    all_imu_data[imu_index][imu_msg.index][2] = imu_msg.accel_z;
-    all_imu_data[imu_index][imu_msg.index][3] = imu_msg.gyro_x;
-    all_imu_data[imu_index][imu_msg.index][4] = imu_msg.gyro_y;
-    all_imu_data[imu_index][imu_msg.index][5] = imu_msg.gyro_z;
+    all_imu_data[imu_index][imu_msg.index][0] = imu_msg.gyro_x;
+    all_imu_data[imu_index][imu_msg.index][1] = imu_msg.gyro_y;
+    all_imu_data[imu_index][imu_msg.index][2] = imu_msg.gyro_z;
+    all_imu_data[imu_index][imu_msg.index][3] = imu_msg.accel_x;
+    all_imu_data[imu_index][imu_msg.index][4] = imu_msg.accel_y;
+    all_imu_data[imu_index][imu_msg.index][5] = imu_msg.accel_z;
+
+    // right lower is a hand device, store its flex sensor data
+    if (imu_index == 2) {
+        all_flex_data[1][imu_msg.index][0] = imu_msg.flex_mid;
+        all_flex_data[1][imu_msg.index][1] = imu_msg.flex_ind;
+    }
 }
 
 void espnow_send_callback(
@@ -331,13 +338,13 @@ void send_imu_data_to_laptop(float all_imu_data[4][IMU_DATA_LEN][6]) {
     esp_http_client_set_post_field(
         client,
         reinterpret_cast<const char *>(all_imu_data),
-        sizeof(all_imu_data)
+        sizeof(all_imu_data[0][0][0]) * 4 * IMU_DATA_LEN * 6
     );
 
     ESP_LOGI(
         "HTTP",
         "Sending %u bytes to laptop",
-        sizeof(all_imu_data)
+        sizeof(all_imu_data[0][0][0]) * 4 * IMU_DATA_LEN * 6
     );
 
     esp_err_t err = esp_http_client_perform(client);

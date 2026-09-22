@@ -42,6 +42,9 @@ struct imu_msg_t {
     float gyro_x;
     float gyro_y;
     float gyro_z;
+    // default to false (straight)
+    bool flex_mid = false;
+    bool flex_ind = false;
     int index;
     // tell central device what this message is responding to
     MessageType type;
@@ -63,6 +66,7 @@ void espnow_init(uint8_t channel);
 
 #ifdef DEVICE_CENTRAL
 extern float all_imu_data[4][IMU_DATA_LEN][6];
+extern bool all_flex_data[2][IMU_DATA_LEN][2];
 
 inline const uint8_t BOARDCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 inline const uint8_t LEFT_LOWER_MAC[6] = LEFT_LOWER_MAC_ADDR;

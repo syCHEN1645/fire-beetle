@@ -33,15 +33,75 @@ To be updated.
 1. IMU registers
 
 0x22  Gyro X L
+
 0x23  Gyro X H
+
 0x24  Gyro Y L
+
 0x25  Gyro Y H
+
 0x26  Gyro Z L
+
 0x27  Gyro Z H
+
 0x28  Accel X L
+
 0x29  Accel X H
+
 0x2A  Accel Y L
+
 0x2B  Accel Y H
+
 0x2C  Accel Z L
+
 0x2D  Accel Z H
 
+2. Data entries
+
+**imu_data[6]**
+
+imu_msg.gyro_x  = imu_data[0];
+
+imu_msg.gyro_y  = imu_data[1];
+
+imu_msg.gyro_z  = imu_data[2];
+
+imu_msg.accel_x = imu_data[3];
+
+imu_msg.accel_y = imu_data[4];
+
+imu_msg.accel_z = imu_data[5];
+
+**flex_data[2]**
+
+0: middle finger
+
+1: index finger
+
+**imu_devices[4]**
+
+0: left hand
+
+1: left arm
+
+2: right hand
+
+3: right arm
+
+**trigger_ref_data[8]**
+
+0: LEFT_LOWER_GYRO
+
+1: LEFT_LOWER_ACCEL
+
+2: LEFT_UPPER_GYRO
+
+3: LEFT_UPPER_ACCEL
+
+4: RIGHT_LOWER_GYRO
+
+5: RIGHT_LOWER_ACCEL
+
+6: RIGHT_UPPER_GYRO
+
+7: RIGHT_UPPER_ACCEL

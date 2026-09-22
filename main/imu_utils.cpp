@@ -105,13 +105,13 @@ void parse_lsm6dsox_imu_data(uint8_t bytes_buffer[12], float raw_buffer[6]) {
 /// @brief Performs zero calibration on 1 piece of IMU data. Gyro minus offset. Accel dot by R matrix. 
 /// @param imu_data Array containing the IMU data: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z.
 void zero_calibrate_lsm6dsox_imu_data (float imu_data[6]) {
-    imu_data[3] -= gyro_offset[0];
-    imu_data[4] -= gyro_offset[1];
-    imu_data[5] -= gyro_offset[2];
+    imu_data[0] -= gyro_offset[0];
+    imu_data[1] -= gyro_offset[1];
+    imu_data[2] -= gyro_offset[2];
 
-    float accel_temp[3] = {imu_data[0], imu_data[1], imu_data[2]};
+    float accel_temp[3] = {imu_data[3], imu_data[4], imu_data[5]};
     for (int i = 0; i < 3; i++) {
-        imu_data[i] = accel_rotation[i][0] * accel_temp[0] + accel_rotation[i][1] * accel_temp[1] + accel_rotation[i][2] * accel_temp[2];
+        imu_data[i + 3] = accel_rotation[i][0] * accel_temp[0] + accel_rotation[i][1] * accel_temp[1] + accel_rotation[i][2] * accel_temp[2];
     }
     return;
 }
