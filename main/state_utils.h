@@ -1,18 +1,25 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
+#include "pwm_ctrl_utils.h"
+
 typedef enum {
+    // user input events
     SE_DOWN,
     SE_UP,
     SE_LEFT,
     SE_RIGHT,
     SE_CLICK,
+    // non user input events
     SE_INIT_READY,
     SE_SESSION_START,
     SE_TRIGGER,
     SE_COUNT,
     SE_ERROR,
 } system_event_t;
+
+#define UI_EVENT_LOW 0
+#define UI_EVENT_HIGH 4
 
 typedef enum {
     SS_STARTUP,
@@ -53,7 +60,7 @@ extern void start_session();
 extern void pause_session();
 extern void end_session();
 
-void push_event(system_event_t event);
+void push_sys_event(system_event_t event);
 void handle_menu_click();
 void handle_startup(system_event_t event);
 void handle_idle(system_event_t event);

@@ -80,7 +80,7 @@ static void reset_session_progress() {
 }
 
 static void IRAM_ATTR joystick_button_isr(void* arg) {
-    push_event(SE_CLICK);
+    push_sys_event(SE_CLICK);
 }
 
 /// @brief Initialize the joystick button.
@@ -305,7 +305,7 @@ void sense_trigger_task(void *arg) {
                     // debounce for 1 second.
                     trigger_lock_until = now + TRIGGER_LOCKOUT_MS * 1000;
                     // send trigger event
-                    push_event(system_event_t::SE_TRIGGER);
+                    push_sys_event(system_event_t::SE_TRIGGER);
                 }
                 // next comparison after 300 ms
                 next_compare_time = now + TRIGGER_INTERVAL_MS * 1000;
@@ -366,13 +366,13 @@ void joystick_task() {
 
         bool triggered = true;
         if (x_val < JOY_LOW_THRESHOLD) {
-            push_event(SE_DOWN);
+            push_sys_event(SE_DOWN);
         } else if (x_val > JOY_HIGH_THRESHOLD) {
-            push_event(SE_UP);
+            push_sys_event(SE_UP);
         } else if (y_val < JOY_LOW_THRESHOLD) {
-            push_event(SE_LEFT);
+            push_sys_event(SE_LEFT);
         } else if (y_val > JOY_HIGH_THRESHOLD) {
-            push_event(SE_RIGHT);
+            push_sys_event(SE_RIGHT);
         } else {
             // joystick is in the neutral position
             triggered = false;
@@ -395,6 +395,19 @@ void handle_actuator_by_event(actuator_event_t event) {
     motor_stop();
 #endif
     switch (event) {
+        case AE_INVALID:
+            // Flash yellow by 200 ms
+            led_set_color(255, 255, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 200 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(200));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
         case AE_CLICK:
             // Flash blue by 200 ms
             led_set_color(0, 0, 255);
@@ -915,7 +928,7 @@ extern "C" void app_main() {
     ESP_LOGI("SYSTEM", "All initialization done");
     // All init done, notify system
     ESP_LOGI("SYSTEM", "Pushing SE_INIT_READY event");
-    push_event(SE_INIT_READY);
+    push_sys_event(SE_INIT_READY);
 
     // keep main task alive
     // FSM

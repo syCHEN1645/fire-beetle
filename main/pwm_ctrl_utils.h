@@ -13,11 +13,13 @@ inline QueueHandle_t actuator_queue;
 typedef enum {
     AE_CLICK,
     AE_OK,
+    AE_INVALID,
     AE_ERROR,
     AE_ACTION,
     AE_COUNT,
 } actuator_event_t;
 
+void push_actuator_event(actuator_event_t event);
 void pwm_ctrl_init(void);
 void led_set_color(uint8_t red, uint8_t green, uint8_t blue);
 void led_off(void);

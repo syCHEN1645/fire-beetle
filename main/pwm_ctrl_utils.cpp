@@ -1,5 +1,11 @@
 #include "pwm_ctrl_utils.h"
 
+void push_actuator_event(actuator_event_t event) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xQueueSendFromISR(actuator_queue, &event, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
 void pwm_ctrl_init() {
     // Configure PWM timer
     ledc_timer_config_t timer_config = {
