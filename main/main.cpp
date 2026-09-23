@@ -63,15 +63,13 @@ static TaskHandle_t fsm_task_handle = NULL;
 static TaskHandle_t read_sensor_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
 static TaskHandle_t trigger_reference_task_handle = NULL;
+static TaskHandle_t session_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
-// session progress tracking
-static int exercise_count = 0;
 // TODO: Adjust trigger thresholds based on empirical data
 static float trigger_thresholds[8] = {1, 2, 3, 4, 5, 6, 7, 8};
 
-static void reset_session_progress() {
-    exercise_count = 0;
+static void reset_session_sensor_data() {
     // reset imu data buffer
     oldest_index = 0;
     for (int i = 0; i < 4 * IMU_DATA_LEN * 6; i++) {
@@ -768,8 +766,61 @@ void start_trigger_reference() {
 }
 
 void start_session() {
+    // inform all devices to start reading sensor data
     send_start_msg();
     xTaskNotifyGive(read_sensor_task_handle);
+    // wake up session task
+    xTaskNotifyGive(session_task_handle);
+}
+
+void session_task(void *arg) {
+    while (true) {
+        // sleep by default
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
+
+            // Rest for 3000 ms
+            uint32_t res = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000));
+            if (res > 0) {
+                if (current_state == SS_SESSION_PAUSE) {
+                    // session paused
+                    break;
+                }
+                if (current_state != SS_SESSION) {
+                    // session exited
+                    reset_session_sensor_data();
+                    reset_session_progress();
+                    break;
+                }
+            }
+
+            // Action
+            // collect action data
+            res = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000));
+            if (res > 0) {
+                if (current_state == SS_SESSION_PAUSE) {
+                    // session paused
+                    break;
+                }
+                if (current_state != SS_SESSION) {
+                    // session exited
+                    reset_session_sensor_data();
+                    reset_session_progress();
+                    break;
+                }
+            }
+            
+            // send data, receive inference result
+            session_count++;
+
+            if (session_count >= session_target) {
+                ESP_LOGI("SESSION", "Session target reached");
+                break;
+            }
+        }
+        ESP_LOGI("SESSION", "Session ended");
+        push_sys_event(SE_SESSION_END);
+    }
 }
 
 void pause_session() {
@@ -780,6 +831,7 @@ void end_session() {
     send_pause_msg();
     pause_session();
     xTaskNotifyGive(read_sensor_task_handle);
+    reset_session_sensor_data();
     reset_session_progress();
 }
 
@@ -922,6 +974,16 @@ extern "C" void app_main() {
         NULL,
         5,
         &trigger_reference_task_handle,
+        tskNO_AFFINITY
+    );
+    // create session task
+    xTaskCreatePinnedToCore(
+        session_task,
+        "Session Task",
+        4096,
+        NULL,
+        5,
+        &session_task_handle,
         tskNO_AFFINITY
     );
 

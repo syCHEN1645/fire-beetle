@@ -208,3 +208,9 @@ void handle_menu(system_event_t event) {
     }
     ESP_LOGI("FSM", "current menu: %d", current_menu);
 }
+
+void reset_session_progress() {
+    session_count = 0;
+    session_action_index = 0;
+    session_target = 0;
+}

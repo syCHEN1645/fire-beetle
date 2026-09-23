@@ -13,6 +13,7 @@ typedef enum {
     // non user input events
     SE_INIT_READY,
     SE_SESSION_START,
+    SE_SESSION_END,
     SE_TRIGGER,
     SE_COUNT,
     SE_ERROR,
@@ -54,6 +55,9 @@ typedef enum {
 inline volatile system_state_t current_state = SS_STARTUP;
 inline volatile menu_selection_t current_menu = MENU_CALIBRATION;
 inline QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
+inline int session_count = 0;
+inline int session_action_index = 0;
+inline int session_target = 0;
 
 extern void start_calibration();
 extern void start_session();
@@ -68,3 +72,4 @@ void handle_session(system_event_t event);
 void handle_session_pause(system_event_t event);
 void handle_error(system_event_t event);
 void handle_menu(system_event_t event);
+void reset_session_progress();
