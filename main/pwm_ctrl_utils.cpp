@@ -1,9 +1,7 @@
 #include "pwm_ctrl_utils.h"
 
 void push_actuator_event(actuator_event_t event) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xQueueSendFromISR(actuator_queue, &event, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    xQueueSend(actuator_queue, &event, portMAX_DELAY);
 }
 
 void pwm_ctrl_init() {
@@ -30,7 +28,7 @@ void pwm_ctrl_init() {
         .timer_sel  = LEDC_TIMER_0,
         .duty       = 0,
         .hpoint     = 0,
-        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_ALLOW_PD,
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
         .flags      = 0
     };
 
@@ -47,7 +45,7 @@ void pwm_ctrl_init() {
         .timer_sel  = LEDC_TIMER_0,
         .duty       = 0,
         .hpoint     = 0,
-        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_ALLOW_PD,
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
         .flags      = 0
     };
 
@@ -64,7 +62,7 @@ void pwm_ctrl_init() {
         .timer_sel  = LEDC_TIMER_0,
         .duty       = 0,
         .hpoint     = 0,
-        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_ALLOW_PD,
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
         .flags      = 0
     };
 
@@ -82,7 +80,7 @@ void pwm_ctrl_init() {
         .timer_sel  = LEDC_TIMER_0,
         .duty       = 0,
         .hpoint     = 0,
-        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_ALLOW_PD,
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
         .flags      = 0
     };
 

@@ -54,7 +54,7 @@ typedef enum {
 
 inline volatile system_state_t current_state = SS_STARTUP;
 inline volatile menu_selection_t current_menu = MENU_CALIBRATION;
-inline QueueHandle_t event_queue = xQueueCreate(10, sizeof(system_event_t));
+inline QueueHandle_t event_queue = xQueueCreate(5, sizeof(system_event_t));
 inline int session_count = 0;
 inline int session_action_index = 0;
 inline int session_target = 0;

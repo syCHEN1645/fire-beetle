@@ -64,6 +64,8 @@ static TaskHandle_t read_sensor_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
 static TaskHandle_t trigger_reference_task_handle = NULL;
 static TaskHandle_t session_task_handle = NULL;
+static TaskHandle_t joystick_task_handle = NULL;
+static TaskHandle_t actuator_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
 // TODO: Adjust trigger thresholds based on empirical data
@@ -78,7 +80,10 @@ static void reset_session_sensor_data() {
 }
 
 static void IRAM_ATTR joystick_button_isr(void* arg) {
-    push_sys_event(SE_CLICK);
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    system_event_t event = SE_CLICK;
+    xQueueSendFromISR(event_queue, &event, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
 /// @brief Initialize the joystick button.
@@ -303,7 +308,7 @@ void sense_trigger_task(void *arg) {
                     // debounce for 1 second.
                     trigger_lock_until = now + TRIGGER_LOCKOUT_MS * 1000;
                     // send trigger event
-                    push_sys_event(system_event_t::SE_TRIGGER);
+                    push_sys_event(SE_TRIGGER);
                 }
                 // next comparison after 300 ms
                 next_compare_time = now + TRIGGER_INTERVAL_MS * 1000;
@@ -349,7 +354,7 @@ void inference_data_task(void *arg) {
     }
 }
 
-void joystick_task() {
+void joystick_task(void *arg) {
     while (true) {
         // Read joystick X and Y positions
         int x_val, y_val;
@@ -408,7 +413,7 @@ void handle_actuator_by_event(actuator_event_t event) {
             break;
         case AE_CLICK:
             // Flash blue by 200 ms
-            led_set_color(0, 0, 255);
+            led_set_color(0, 0, 128);
 #ifdef DEVICE_ARM
             // gentle vibration for 200 ms
             motor_gentle();
@@ -843,6 +848,7 @@ void fsm_task(void *arg) {
     while (true) {
         // Wait for the next event from the event queue
         xQueueReceive(event_queue, &event, portMAX_DELAY);
+        ESP_LOGI("FSM", "Event received: %d", event);
         // Implement the finite state machine logic here
         // under each case, give/take tasks based on the event received
         switch (current_state) {
@@ -875,6 +881,25 @@ void fsm_task(void *arg) {
                 break;
         }
     }
+}
+
+void debug_joystick() {
+        int joystick_x;
+        int joystick_y;
+
+        ESP_ERROR_CHECK(adc_oneshot_read(
+            adc1_handle,
+            JOYSTICK_X_CHANNEL,
+            &joystick_x
+        ));
+
+        ESP_ERROR_CHECK(adc_oneshot_read(
+            adc1_handle,
+            JOYSTICK_Y_CHANNEL,
+            &joystick_y
+        ));
+
+        ESP_LOGI("JOYSTICK", "X=%d Y=%d", joystick_x, joystick_y);
 }
 
 #endif
@@ -915,6 +940,8 @@ extern "C" void app_main() {
     espnow_init(primary_channel);
 
 #endif
+    pwm_ctrl_init();
+    adc_init();
 
 #ifdef DEVICE_PERIPHERAL
     uint8_t count = 0, channel = 0;
@@ -942,10 +969,18 @@ extern "C" void app_main() {
 #ifdef DEVICE_CENTRAL
     // attach to interrupt for buttons
     // button_init();
-    adc_init();
     joystick_init();
 #endif
-
+    // create actuator task
+    xTaskCreatePinnedToCore(
+        actuator_task,
+        "Actuator Task",
+        4096,
+        NULL,
+        5,
+        &actuator_task_handle,
+        tskNO_AFFINITY
+    );
     // create imu read task
     xTaskCreatePinnedToCore(
         read_sensor_task,
@@ -974,6 +1009,15 @@ extern "C" void app_main() {
         NULL,
         5,
         &trigger_reference_task_handle,
+        tskNO_AFFINITY
+    );
+    xTaskCreatePinnedToCore(
+        joystick_task,
+        "Joystick Task",
+        4096,
+        NULL,
+        5,
+        &joystick_task_handle,
         tskNO_AFFINITY
     );
     // create session task
@@ -1005,22 +1049,6 @@ extern "C" void app_main() {
     );
 
     while (true) {
-        int joystick_x;
-        int joystick_y;
-
-        ESP_ERROR_CHECK(adc_oneshot_read(
-            adc1_handle,
-            JOYSTICK_X_CHANNEL,
-            &joystick_x
-        ));
-
-        ESP_ERROR_CHECK(adc_oneshot_read(
-            adc1_handle,
-            JOYSTICK_Y_CHANNEL,
-            &joystick_y
-        ));
-
-        ESP_LOGI("JOYSTICK", "X=%d Y=%d", joystick_x, joystick_y);
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

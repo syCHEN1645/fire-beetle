@@ -7,9 +7,7 @@
 /// @param event The system event to be pushed.
 /// @note This function will be called from an ISR context, do not call ESP_LOG inside.
 void push_sys_event(system_event_t event) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xQueueSendFromISR(event_queue, &event, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    xQueueSend(event_queue, &event, portMAX_DELAY);
 }
 
 /// @brief Handles the action when a menu item is clicked (event SE_CLICK).

@@ -8,8 +8,6 @@
 #include "hw_config.h"
 #include "func_config.h"
 
-inline QueueHandle_t actuator_queue;
-
 typedef enum {
     AE_CLICK,
     AE_OK,
@@ -18,6 +16,8 @@ typedef enum {
     AE_ACTION,
     AE_COUNT,
 } actuator_event_t;
+
+inline QueueHandle_t actuator_queue = xQueueCreate(5, sizeof(actuator_event_t));
 
 void push_actuator_event(actuator_event_t event);
 void pwm_ctrl_init(void);
