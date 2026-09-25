@@ -35,7 +35,7 @@ struct ctrl_msg_t {
     MessageType type;
 };
 
-struct imu_msg_t {
+struct sensor_msg_t {
     float accel_x;
     float accel_y;
     float accel_z;

@@ -80,7 +80,11 @@ esp_err_t read_from_lsm6dsox_imu(i2c_master_dev_handle_t dev_handle, uint8_t *re
     if (ret != ESP_OK) {
         ESP_LOGE("I2C", "Read from LSM6DSOX sensor error: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI("I2C", "Read from LSM6DSOX sensor successful");
+        int r = rand();
+        // prevent flooding terminal
+        if (r % 26 == 0) {
+            ESP_LOGI("I2C", "Read from LSM6DSOX sensor successful");
+        }
     }
     return ret;
 }
@@ -181,13 +185,13 @@ void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle) {
             imu_zero_calibration[i] = calibration_data[i] /= (float)count;
         }
     }
-    ESP_LOGI("IMU", "Zero calibration completed: x=%f, y=%f, z=%f, gx=%f, gy=%f, gz=%f",
+    ESP_LOGI("IMU", "Average values: gx=%f, gy=%f, gz=%f, ax=%f, ay=%f, az=%f", 
              imu_zero_calibration[0], imu_zero_calibration[1], imu_zero_calibration[2],
              imu_zero_calibration[3], imu_zero_calibration[4], imu_zero_calibration[5]);
     
     // gyroscope offset
     for (int i = 0; i < 3; i++) {
-        gyro_offset[i] = imu_zero_calibration[3 + i];
+        gyro_offset[i] = imu_zero_calibration[i];
     }
 
     // accelerometer offset
@@ -195,11 +199,11 @@ void get_lsm6dsox_zero_calibration(i2c_master_dev_handle_t dev_handle) {
     // g = [0, 0, 1].T
     float a[3], v[3];
     
-    float accel_magnitude = sqrt(imu_zero_calibration[0] * imu_zero_calibration[0] +
-                           imu_zero_calibration[1] * imu_zero_calibration[1] +
-                           imu_zero_calibration[2] * imu_zero_calibration[2]);
+    float accel_magnitude = sqrt(imu_zero_calibration[3] * imu_zero_calibration[3] +
+                           imu_zero_calibration[4] * imu_zero_calibration[4] +
+                           imu_zero_calibration[5] * imu_zero_calibration[5]);
     for (int i = 0; i < 3; i++) {
-        a[i] = imu_zero_calibration[i] / accel_magnitude;
+        a[i] = imu_zero_calibration[3 + i] / accel_magnitude;
     }
 
     // v = a.cross(g), then normalise v

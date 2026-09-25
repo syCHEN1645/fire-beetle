@@ -66,6 +66,7 @@ static TaskHandle_t trigger_reference_task_handle = NULL;
 static TaskHandle_t session_task_handle = NULL;
 static TaskHandle_t joystick_task_handle = NULL;
 static TaskHandle_t actuator_task_handle = NULL;
+static TaskHandle_t collect_inference_data_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
 // TODO: Adjust trigger thresholds based on empirical data
@@ -178,41 +179,41 @@ void trigger_reference_task(void *arg) {
         while (imu_data_collection_count < IMU_TRIGGER_LEN) {
             esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
             if (err != ESP_OK) {
-                ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+                ESP_LOGE("SENSOR", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
             }
             float imu_data[6];
             parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
             zero_calibrate_lsm6dsox_imu_data(imu_data);
             
-            ESP_LOGI("IMU", "Collected IMU data:");
+            ESP_LOGI("SENSOR", "Collected IMU data:");
 #ifdef DEVICE_CENTRAL
             for (int i = 0; i < 4; i++) {
                 // gyro
                 trigger_reference[i*2][imu_data_collection_count][i] = imu_data[i];
                 // accel
                 trigger_reference[i*2 + 1][imu_data_collection_count][i] = imu_data[i + 3];
-                ESP_LOGI("IMU", "%f", imu_data[i]);
+                ESP_LOGI("SENSOR", "%f", imu_data[i]);
             }
 #endif
 #ifdef DEVICE_PERIPHERAL
             for (int i = 0; i < 6; i++) {
                 // imu_data_collection[imu_data_collection_count][i] = imu_data[i];
-                ESP_LOGI("IMU", "%f", imu_data[i]);
+                ESP_LOGI("SENSOR", "%f", imu_data[i]);
             }
             // send the collected IMU data to the central device via ESP-NOW
-            imu_msg_t imu_msg;
-            imu_msg.gyro_x = imu_data[0];
-            imu_msg.gyro_y = imu_data[1];
-            imu_msg.gyro_z = imu_data[2];
-            imu_msg.accel_x = imu_data[3];
-            imu_msg.accel_y = imu_data[4];
-            imu_msg.accel_z = imu_data[5];
-            imu_msg.index = imu_data_collection_count;
-            imu_msg.type = MessageType::CALI_TRIGGER;
+            sensor_msg_t sensor_msg;
+            sensor_msg.gyro_x = imu_data[0];
+            sensor_msg.gyro_y = imu_data[1];
+            sensor_msg.gyro_z = imu_data[2];
+            sensor_msg.accel_x = imu_data[3];
+            sensor_msg.accel_y = imu_data[4];
+            sensor_msg.accel_z = imu_data[5];
+            sensor_msg.index = imu_data_collection_count;
+            sensor_msg.type = MessageType::CALI_TRIGGER;
             esp_err_t result = esp_now_send(
                 CENTRAL_MAC,
-                reinterpret_cast<const uint8_t *>(&imu_msg),
-                sizeof(imu_msg)
+                reinterpret_cast<const uint8_t *>(&sensor_msg),
+                sizeof(sensor_msg)
             );
             if (result != ESP_OK) {
                 ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
@@ -320,7 +321,7 @@ void sense_trigger_task(void *arg) {
     }
 }
 
-void inference_data_task(void *arg) {
+void collect_inference_data_task(void *arg) {
     while (true) {
         // Wait until the session begins.
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -342,6 +343,7 @@ void inference_data_task(void *arg) {
             // TODO: send to ultra96
             send_imu_data_to_laptop(inference_window);
             // Wait 2 seconds before requesting another window.
+            // TODO: change to ulTaskNotifyTake with a timeout.
             for (int i = 0; i < 40; ++i) {
                 // Check every 50 ms whether the session has ended.
                 if (!(current_state == SS_SESSION ||
@@ -352,6 +354,35 @@ void inference_data_task(void *arg) {
             }
         }
     }
+}
+
+/// @brief Collects the latest 3 seconds of IMU data and sends it to the laptop for inference.
+void collect_inference_data() {
+    // Take a snapshot of the latest 3 seconds of IMU data.
+    // put this to global var to save space on stack, otherwise overflow
+    static float inference_window[4][IMU_DATA_LEN][6];
+    size_t start_index = (oldest_index + 1) % IMU_DATA_LEN;
+
+    for (size_t imu = 0; imu < 4; ++imu) {
+        for (size_t sample = 0; sample < IMU_DATA_LEN; ++sample) {
+            size_t buffer_index = (start_index + sample) % IMU_DATA_LEN;
+            for (size_t i = 0; i < 6; ++i) {
+                inference_window[imu][sample][i] = all_imu_data[imu][buffer_index][i];
+            }
+        }
+    }
+
+    // TODO: send to ultra96
+    ESP_LOGI("SESSION", "Collecting inference data and sending to laptop");
+    // print some samples for debugging
+    // print from central device, every 26 samples
+    for (size_t sample = 0; sample < IMU_DATA_LEN; sample += 26) {
+        ESP_LOGI("SESSION", "IMU %d Sample %d: gx=%f, gy=%f, gz=%f, ax=%f, ay=%f, az=%f",
+                    0, sample,
+                    inference_window[0][sample][0], inference_window[0][sample][1], inference_window[0][sample][2],
+                    inference_window[0][sample][3], inference_window[0][sample][4], inference_window[0][sample][5]);
+    }
+    send_imu_data_to_laptop(inference_window);
 }
 
 void joystick_task(void *arg) {
@@ -413,7 +444,7 @@ void handle_actuator_by_event(actuator_event_t event) {
             break;
         case AE_CLICK:
             // Flash blue by 200 ms
-            led_set_color(0, 0, 128);
+            led_set_color(0, 0, 0);
 #ifdef DEVICE_ARM
             // gentle vibration for 200 ms
             motor_gentle();
@@ -422,7 +453,8 @@ void handle_actuator_by_event(actuator_event_t event) {
 #ifdef DEVICE_ARM
             motor_stop();
 #endif
-            led_set_color(0, 0, 0);
+            led_set_color(0, 0, 128);
+            vTaskDelay(pdMS_TO_TICKS(200));
             break;
         case AE_ERROR:
             // Flash red at 100 ms 3 times
@@ -558,18 +590,17 @@ void read_sensor_task(void *arg) {
     while (true) {
         // put it to suspension upon creation
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        int debug_counter = 0;
         
         // only run during a session (including pause)
         while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
             esp_err_t err = read_from_lsm6dsox_imu(dev_handle, imu_data_buffer, sizeof(imu_data_buffer));
             if (err != ESP_OK) {
-                ESP_LOGE("IMU", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
+                ESP_LOGE("SENSOR", "Failed to read from LSM6DSOX IMU: %s", esp_err_to_name(err));
             }
             float imu_data[6];
             parse_lsm6dsox_imu_data(imu_data_buffer, imu_data);
             zero_calibrate_lsm6dsox_imu_data(imu_data);
-            
-            ESP_LOGI("IMU", "Collected IMU data:");
 
 #ifdef DEVICE_HAND
             // read flex sensor data
@@ -590,12 +621,19 @@ void read_sensor_task(void *arg) {
             );
             bool flex_mid_bent = is_finger_bent((float)flex_mid_val);
             bool flex_ind_bent = is_finger_bent((float)flex_ind_val);
+            if (debug_counter == 0) {
+                ESP_LOGI("SENSOR", "Collected flex sensor data: mid=%d, ind=%d", flex_mid_bent, flex_ind_bent);
+            }
 #endif
-
+            if (debug_counter == 0) {
+                ESP_LOGI("SENSOR", "Collected IMU data:");
+            }
 #ifdef DEVICE_CENTRAL
             for (int i = 0; i < 6; i++) {
                 all_imu_data[0][oldest_index][i] = imu_data[i];
-                ESP_LOGI("IMU", "%f", imu_data[i]);
+                if (debug_counter == 0) {
+                    ESP_LOGI("SENSOR", "%f", imu_data[i]);
+                }
             }
 
             // central device is a hand device
@@ -606,29 +644,31 @@ void read_sensor_task(void *arg) {
 #ifdef DEVICE_PERIPHERAL
             for (int i = 0; i < 6; i++) {
                 // imu_data_collection[oldest_index][i] = imu_data[i];
-                ESP_LOGI("IMU", "%f", imu_data[i]);
+                if (debug_counter == 0) {
+                    ESP_LOGI("SENSOR", "%f", imu_data[i]);
+                }
             }
-            // send the collected IMU data to the central device via ESP-NOW
-            imu_msg_t imu_msg;
-            imu_msg.gyro_x = imu_data[0];
-            imu_msg.gyro_y = imu_data[1];
-            imu_msg.gyro_z = imu_data[2];
-            imu_msg.accel_x = imu_data[3];
-            imu_msg.accel_y = imu_data[4];
-            imu_msg.accel_z = imu_data[5];
+            // send the collected SENSOR data to the central device via ESP-NOW
+            sensor_msg_t sensor_msg;
+            sensor_msg.gyro_x = imu_data[0];
+            sensor_msg.gyro_y = imu_data[1];
+            sensor_msg.gyro_z = imu_data[2];
+            sensor_msg.accel_x = imu_data[3];
+            sensor_msg.accel_y = imu_data[4];
+            sensor_msg.accel_z = imu_data[5];
 #ifdef DEVICE_HAND
-            imu_msg.flex_mid = flex_mid_bent;
-            imu_msg.flex_ind = flex_ind_bent;
+            sensor_msg.flex_mid = flex_mid_bent;
+            sensor_msg.flex_ind = flex_ind_bent;
 #endif
-            imu_msg.index = oldest_index;
-            imu_msg.type = MessageType::DATA;
+            sensor_msg.index = oldest_index;
+            sensor_msg.type = MessageType::DATA;
             esp_err_t result = esp_now_send(
                 CENTRAL_MAC,
-                reinterpret_cast<const uint8_t *>(&imu_msg),
-                sizeof(imu_msg)
+                reinterpret_cast<const uint8_t *>(&sensor_msg),
+                sizeof(sensor_msg)
             );
             if (result != ESP_OK) {
-                ESP_LOGE("ESP-NOW", "Failed to send IMU data with error %d", result);
+                ESP_LOGE("ESP-NOW", "Failed to send SENSOR data with error %d", result);
             }
 #endif
             oldest_index = (oldest_index + 1) % IMU_DATA_LEN;
@@ -638,6 +678,7 @@ void read_sensor_task(void *arg) {
                     all_imu_data[j][oldest_index][i] = 0.0f;
                 }
             }
+            debug_counter = (debug_counter + 1) % IMU_DATA_F;
             vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
         }
 #ifdef DEVICE_CENTRAL
@@ -785,16 +826,22 @@ void session_task(void *arg) {
         while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
 
             // Rest for 3000 ms
+            // res = 0 if timeout, meaning no notification was received during 3000 ms
+            // res > 0 if a notification was received, respond according to current state
             uint32_t res = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000));
             if (res > 0) {
                 if (current_state == SS_SESSION_PAUSE) {
                     // session paused
+                    reset_session_sensor_data();
+                    ESP_LOGI("SESSION", "Session paused");
                     break;
                 }
                 if (current_state != SS_SESSION) {
                     // session exited
                     reset_session_sensor_data();
                     reset_session_progress();
+                    ESP_LOGI("SESSION", "Session ended");
+                    push_sys_event(SE_SESSION_END);
                     break;
                 }
             }
@@ -816,20 +863,23 @@ void session_task(void *arg) {
             }
             
             // send data, receive inference result
+            // TODO: dummy
+            collect_inference_data();
             session_count++;
 
             if (session_count >= session_target) {
                 ESP_LOGI("SESSION", "Session target reached");
+                ESP_LOGI("SESSION", "Session ended");
+                push_sys_event(SE_SESSION_END);
                 break;
             }
         }
-        ESP_LOGI("SESSION", "Session ended");
-        push_sys_event(SE_SESSION_END);
     }
 }
 
 void pause_session() {
     // pause inference task, but keep trigger reference task running
+    xTaskNotifyGive(session_task_handle);
 }
 
 void end_session() {
@@ -968,10 +1018,8 @@ extern "C" void app_main() {
 
 #ifdef DEVICE_CENTRAL
     // attach to interrupt for buttons
-    // button_init();
     joystick_init();
 #endif
-    // create actuator task
     xTaskCreatePinnedToCore(
         actuator_task,
         "Actuator Task",
@@ -981,17 +1029,15 @@ extern "C" void app_main() {
         &actuator_task_handle,
         tskNO_AFFINITY
     );
-    // create imu read task
     xTaskCreatePinnedToCore(
         read_sensor_task,
-        "Read IMU Task",
+        "Read SENSOR Task",
         4096,
         NULL,
         5,
         &read_sensor_task_handle,
         tskNO_AFFINITY
     );
-    // create imu calibration task
     xTaskCreatePinnedToCore(
         calibration_task,
         "Calibration Task",
@@ -1001,7 +1047,6 @@ extern "C" void app_main() {
         &calibration_task_handle,
         tskNO_AFFINITY
     );
-    // create trigger reference task
     xTaskCreatePinnedToCore(
         trigger_reference_task,
         "Trigger Reference Task",
@@ -1020,7 +1065,6 @@ extern "C" void app_main() {
         &joystick_task_handle,
         tskNO_AFFINITY
     );
-    // create session task
     xTaskCreatePinnedToCore(
         session_task,
         "Session Task",
@@ -1036,8 +1080,6 @@ extern "C" void app_main() {
     ESP_LOGI("SYSTEM", "Pushing SE_INIT_READY event");
     push_sys_event(SE_INIT_READY);
 
-    // keep main task alive
-    // FSM
     xTaskCreatePinnedToCore(
         fsm_task,
         "FSM Task",
@@ -1047,6 +1089,15 @@ extern "C" void app_main() {
         &fsm_task_handle,
         tskNO_AFFINITY
     );
+    // xTaskCreatePinnedToCore(
+    //     collect_inference_data_task,
+    //     "Collect Inference Data Task",
+    //     4096,
+    //     NULL,
+    //     5,
+    //     &collect_inference_data_task_handle,
+    //     tskNO_AFFINITY
+    // );
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));

@@ -175,18 +175,18 @@ void espnow_receive_callback(
     const esp_now_recv_info_t *recv_info,
     const uint8_t *data,
     int len) {
-    imu_msg_t imu_msg;
-    if (len == sizeof(imu_msg_t)) {
-        memcpy(&imu_msg, data, sizeof(imu_msg_t));
+    sensor_msg_t sensor_msg;
+    if (len == sizeof(sensor_msg_t)) {
+        memcpy(&sensor_msg, data, sizeof(sensor_msg_t));
     } else {
         return;
     }
 
-    if (imu_msg.index >= IMU_DATA_LEN) {
+    if (sensor_msg.index >= IMU_DATA_LEN) {
         ESP_LOGW(
             "ESP-NOW",
             "Invalid IMU index: %d",
-            imu_msg.index
+            sensor_msg.index
         );
         return;
     }
@@ -212,17 +212,17 @@ void espnow_receive_callback(
     // imu_index in trigger_reference:
     // 0: LEFT_LOWER_GYRO, 1: LEFT_LOWER_ACCEL, 2: LEFT_UPPER_GYRO, 3: LEFT_UPPER_ACCEL,
     // 4: RIGHT_LOWER_GYRO, 5: RIGHT_LOWER_ACCEL, 6: RIGHT_UPPER_GYRO, 7: RIGHT_UPPER_ACCEL
-    all_imu_data[imu_index][imu_msg.index][0] = imu_msg.gyro_x;
-    all_imu_data[imu_index][imu_msg.index][1] = imu_msg.gyro_y;
-    all_imu_data[imu_index][imu_msg.index][2] = imu_msg.gyro_z;
-    all_imu_data[imu_index][imu_msg.index][3] = imu_msg.accel_x;
-    all_imu_data[imu_index][imu_msg.index][4] = imu_msg.accel_y;
-    all_imu_data[imu_index][imu_msg.index][5] = imu_msg.accel_z;
+    all_imu_data[imu_index][sensor_msg.index][0] = sensor_msg.gyro_x;
+    all_imu_data[imu_index][sensor_msg.index][1] = sensor_msg.gyro_y;
+    all_imu_data[imu_index][sensor_msg.index][2] = sensor_msg.gyro_z;
+    all_imu_data[imu_index][sensor_msg.index][3] = sensor_msg.accel_x;
+    all_imu_data[imu_index][sensor_msg.index][4] = sensor_msg.accel_y;
+    all_imu_data[imu_index][sensor_msg.index][5] = sensor_msg.accel_z;
 
     // right lower is a hand device, store its flex sensor data
     if (imu_index == 2) {
-        all_flex_data[1][imu_msg.index][0] = imu_msg.flex_mid;
-        all_flex_data[1][imu_msg.index][1] = imu_msg.flex_ind;
+        all_flex_data[1][sensor_msg.index][0] = sensor_msg.flex_mid;
+        all_flex_data[1][sensor_msg.index][1] = sensor_msg.flex_ind;
     }
 }
 

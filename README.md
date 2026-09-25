@@ -60,17 +60,17 @@ To be updated.
 
 **imu_data[6]**
 
-imu_msg.gyro_x  = imu_data[0];
+sensor_msg.gyro_x  = imu_data[0];
 
-imu_msg.gyro_y  = imu_data[1];
+sensor_msg.gyro_y  = imu_data[1];
 
-imu_msg.gyro_z  = imu_data[2];
+sensor_msg.gyro_z  = imu_data[2];
 
-imu_msg.accel_x = imu_data[3];
+sensor_msg.accel_x = imu_data[3];
 
-imu_msg.accel_y = imu_data[4];
+sensor_msg.accel_y = imu_data[4];
 
-imu_msg.accel_z = imu_data[5];
+sensor_msg.accel_z = imu_data[5];
 
 **flex_data[2]**
 
