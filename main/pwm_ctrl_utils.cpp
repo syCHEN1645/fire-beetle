@@ -1,9 +1,5 @@
 #include "pwm_ctrl_utils.h"
 
-void push_actuator_event(actuator_event_t event) {
-    xQueueSend(actuator_queue, &event, portMAX_DELAY);
-}
-
 void pwm_ctrl_init() {
     // Configure PWM timer
     ledc_timer_config_t timer_config = {

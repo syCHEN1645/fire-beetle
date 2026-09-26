@@ -253,7 +253,7 @@ void send_start_msg() {
     ctrl_msg_t msg;
     msg.timestamp = xTaskGetTickCount();
     msg.index = 0;
-    msg.type = MessageType::DATA;
+    msg.type = MessageType::DATA_START;
     send_ctrl_msg(msg);
 }
 
@@ -261,7 +261,7 @@ void send_pause_msg() {
     ctrl_msg_t msg;
     msg.timestamp = xTaskGetTickCount();
     msg.index = 0;
-    msg.type = MessageType::PAUSE;
+    msg.type = MessageType::DATA_PAUSE;
     send_ctrl_msg(msg);
 }
 
@@ -309,6 +309,19 @@ void wifi_event_handler(
             "Netmask: " IPSTR,
             IP2STR(&event->ip_info.netmask)
         );
+    }
+}
+
+void send_state_event_msg(const state_event_msg_t &msg) {
+    esp_err_t result = esp_now_send(
+        BOARDCAST_MAC,
+        reinterpret_cast<const uint8_t *>(&msg),
+        sizeof(msg)
+    );
+    if (result == ESP_OK) {
+        ESP_LOGI("ESP-NOW", "State event message sent successfully");
+    } else {
+        ESP_LOGE("ESP-NOW", "Failed to send state event message");
     }
 }
 
@@ -426,19 +439,25 @@ uint8_t scan_wifi_channel() {
     return found_channel;
 }
 
-static void espnow_receive_callback(
+void espnow_receive_callback(
     const esp_now_recv_info_t *recv_info,
     const uint8_t *data,
     int len) {
-    if (len != sizeof(ctrl_msg_t)) {
+    if (len == sizeof(ctrl_msg_t)) {
+        ctrl_msg_t msg;
+        memcpy(&msg, data, sizeof(ctrl_msg_t));
+        handle_control_message(msg);
+    } else if (len == sizeof(state_event_msg_t)) {
+        state_event_msg_t msg;
+        memcpy(&msg, data, sizeof(state_event_msg_t));
+        handle_state_event_message(msg);
+    } else {
+        ESP_LOGE("ESP-NOW", "Received unknown message of length %d", len);
         return;
     }
-    ctrl_msg_t msg;
-    memcpy(&msg, data, sizeof(ctrl_msg_t));
-    handle_control_message(msg);
 }
 
-static void espnow_send_callback(
+void espnow_send_callback(
     const esp_now_send_info_t *tx_info,
     esp_now_send_status_t status) {
     if (status == ESP_NOW_SEND_SUCCESS) {

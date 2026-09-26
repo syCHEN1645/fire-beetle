@@ -1,60 +1,14 @@
+#pragma once
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
-#include "pwm_ctrl_utils.h"
-
-typedef enum {
-    // user input events
-    SE_DOWN,
-    SE_UP,
-    SE_LEFT,
-    SE_RIGHT,
-    SE_CLICK,
-    // non user input events
-    SE_INIT_READY,
-    SE_SESSION_START,
-    SE_SESSION_END,
-    SE_TRIGGER,
-    SE_COUNT,
-    SE_ERROR,
-} system_event_t;
-
-#define UI_EVENT_LOW 0
-#define UI_EVENT_HIGH 4
-
-typedef enum {
-    SS_STARTUP,
-    SS_IDLE,
-    SS_SESSION,
-    SS_SESSION_PAUSE,
-    SS_ERROR,
-    SS_MENU,
-} system_state_t;
-
-typedef enum {
-    // main menu options set
-    MENU_CALIBRATION = 0,
-    MENU_SESSION = 1,
-    MENU_SETTINGS = 2,
-    MENU_EXIT = 3,
-    // session menu options set (link to MENU_SESSION)
-    MENU_SESSION_START = 4,
-    MENU_SESSION_INTERVAL = 5,
-    MENU_SESSION_ACTION_1 = 6,
-    MENU_SESSION_ACTION_2 = 7,
-    MENU_SESSION_ACTION_3 = 8,
-    MENU_SESSION_ACTION_4 = 9,
-    MENU_SESSION_ACTION_5 = 10,
-    MENU_SESSION_ACTION_6 = 11,
-    // settings menu options set (link to MENU_SETTINGS)
-    MENU_SETTINGS_VOLUME = 12,
-    MENU_SETTINGS_BRIGHTNESS = 13,
-    // add more settings menu options here if needed
-} menu_selection_t;
+#include "data_struct_utils.h"
+#include "comms_utils.h"
 
 inline volatile system_state_t current_state = SS_STARTUP;
+
+#ifdef DEVICE_CENTRAL
 inline volatile menu_selection_t current_menu = MENU_CALIBRATION;
-inline QueueHandle_t event_queue = xQueueCreate(5, sizeof(system_event_t));
 inline int session_count = 0;
 inline int session_action_index = 0;
 inline int session_target = 0;
@@ -65,6 +19,8 @@ extern void pause_session();
 extern void end_session();
 
 void push_sys_event(system_event_t event);
+void push_actuator_event(actuator_event_t event);
+void change_sys_state(system_state_t new_state);
 void handle_menu_click();
 void handle_startup(system_event_t event);
 void handle_idle(system_event_t event);
@@ -73,3 +29,4 @@ void handle_session_pause(system_event_t event);
 void handle_error(system_event_t event);
 void handle_menu(system_event_t event);
 void reset_session_progress();
+#endif

@@ -3,11 +3,31 @@
 #include <math.h>
 #include "esp_log.h"
 
-/// @brief Push a system event to the event queue from an ISR.
+#ifdef DEVICE_CENTRAL
+/// @brief Push a system event to the event queue.
 /// @param event The system event to be pushed.
-/// @note This function will be called from an ISR context, do not call ESP_LOG inside.
 void push_sys_event(system_event_t event) {
     xQueueSend(event_queue, &event, portMAX_DELAY);
+}
+
+/// @brief Push an actuator event to the actuator event queue.
+/// @param event The actuator event to be pushed.
+void push_actuator_event(actuator_event_t event) {
+    xQueueSend(actuator_queue, &event, portMAX_DELAY);
+    send_state_event_msg({
+        .state = current_state,
+        .event = event,
+        .is_state = false
+    });
+}
+
+void change_sys_state(system_state_t new_state) {
+    current_state = new_state;
+    send_state_event_msg({
+        .state = new_state,
+        .event = AE_ERROR,
+        .is_state = true
+    });
 }
 
 /// @brief Handles the action when a menu item is clicked (event SE_CLICK).
@@ -57,11 +77,11 @@ void handle_startup(system_event_t event) {
     switch (event) {
         case SE_INIT_READY:
             ESP_LOGI("FSM", "SS_STARTUP state, received SE_INIT_READY event");
-            current_state = SS_MENU;
+            change_sys_state(SS_MENU);
             break;
         case SE_ERROR:
             ESP_LOGI("FSM", "SS_STARTUP state, received SE_ERROR event");
-            current_state = SS_ERROR;
+            change_sys_state(SS_ERROR);
             break;
         default:
             break;
@@ -76,31 +96,31 @@ void handle_session(system_event_t event) {
         case SE_TRIGGER:
             ESP_LOGI("FSM", "SS_SESSION state, received SE_TRIGGER event");
             push_actuator_event(AE_OK);
-            current_state = SS_SESSION_PAUSE;
+            change_sys_state(SS_SESSION_PAUSE);
             pause_session();
             break;
         case SE_CLICK:
             ESP_LOGI("FSM", "SS_SESSION state, received SE_CLICK event");
             push_actuator_event(AE_CLICK);
-            current_state = SS_SESSION_PAUSE;
+            change_sys_state(SS_SESSION_PAUSE);
             pause_session();
             break;
         case SE_LEFT:
             ESP_LOGI("FSM", "SS_SESSION state, received SE_LEFT event");
             push_actuator_event(AE_CLICK);
-            current_state = SS_SESSION_PAUSE;
+            change_sys_state(SS_SESSION_PAUSE);
             pause_session();
             break;
         case SE_SESSION_END:
             ESP_LOGI("FSM", "SS_SESSION state, received SE_SESSION_END event");
             push_actuator_event(AE_OK);
-            current_state = SS_MENU;
+            change_sys_state(SS_MENU);
             end_session();
             break;
         case SE_ERROR:
             ESP_LOGI("FSM", "SS_SESSION state, received SE_ERROR event");
             push_actuator_event(AE_ERROR);
-            current_state = SS_ERROR;
+            change_sys_state(SS_ERROR);
             break;
         default:
             // if other user input, invalid
@@ -116,34 +136,34 @@ void handle_session_pause(system_event_t event) {
         case SE_TRIGGER:
             ESP_LOGI("FSM", "SS_SESSION_PAUSE state, received SE_TRIGGER event");
             push_actuator_event(AE_OK);
-            current_state = SS_SESSION;
+            change_sys_state(SS_SESSION);
             // continue session
             start_session();
             break;
         case SE_LEFT:
             ESP_LOGI("FSM", "SS_SESSION_PAUSE state, received SE_LEFT event");
             push_actuator_event(AE_CLICK);
-            current_state = SS_SESSION;
+            change_sys_state(SS_SESSION);
             // continue session
             start_session();
             break;
         case SE_CLICK:
             ESP_LOGI("FSM", "SS_SESSION_PAUSE state, received SE_CLICK event");
             push_actuator_event(AE_CLICK);
-            current_state = SS_MENU;
+            change_sys_state(SS_MENU);
             // end the session early, back to menu
             end_session();
             break;
         case SE_SESSION_END:
             ESP_LOGI("FSM", "SS_SESSION_PAUSE state, received SE_SESSION_END event");
             push_actuator_event(AE_OK);
-            current_state = SS_MENU;
+            change_sys_state(SS_MENU);
             end_session();
             break;
         case SE_ERROR:
             ESP_LOGI("FSM", "SS_SESSION_PAUSE state, received SE_ERROR event");
             push_actuator_event(AE_ERROR);
-            current_state = SS_ERROR;
+            change_sys_state(SS_ERROR);
             break;
         default:
             if (event >= UI_EVENT_LOW && event <= UI_EVENT_HIGH) {
@@ -202,13 +222,13 @@ void handle_menu(system_event_t event) {
             break;
         case SE_SESSION_START:
             ESP_LOGI("RECV", "SE_SESSION_START received");
-            current_state = SS_SESSION;
+            change_sys_state(SS_SESSION);
             start_session();
             break;
         case SE_ERROR:
             ESP_LOGI("FSM", "SS_MENU state, received SE_ERROR event");
             push_actuator_event(AE_ERROR);
-            current_state = SS_ERROR;
+            change_sys_state(SS_ERROR);
             break;
         default:
             if (event >= UI_EVENT_LOW && event <= UI_EVENT_HIGH) {
@@ -224,3 +244,4 @@ void reset_session_progress() {
     session_action_index = 0;
     session_target = 0;
 }
+#endif

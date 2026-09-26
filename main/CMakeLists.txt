@@ -2,7 +2,7 @@ idf_component_register(SRCS "pwm_ctrl_utils.cpp" "adc_utils.cpp" "dtw.cpp" "stat
                     PRIV_REQUIRES nvs_flash esp_event esp_netif esp_wifi esp_adc
                     INCLUDE_DIRS ".")
 
-add_compile_definitions(DEVICE_CENTRAL)
-# add_compile_definitions(DEVICE_PERIPHERAL)
-add_compile_definitions(DEVICE_HAND)
-# add_compile_definitions(DEVICE_ARM)
+# add_compile_definitions(DEVICE_CENTRAL)
+add_compile_definitions(DEVICE_PERIPHERAL)
+# add_compile_definitions(DEVICE_HAND)
+add_compile_definitions(DEVICE_ARM)

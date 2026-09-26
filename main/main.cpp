@@ -37,9 +37,10 @@
 #include "pwm_ctrl_utils.h"
 #include "imu_utils.h"
 #include "comms_utils.h"
+#include "state_utils.h"
+#include "data_struct_utils.h"
 #ifdef DEVICE_CENTRAL
 #include "dtw.h"
-#include "state_utils.h"
 #endif
 
 // IMU data buffers
@@ -52,33 +53,30 @@ float accel_rotation[3][3];
 // trigger reference buffer
 size_t oldest_index = 0;
 float trigger_reference[8][IMU_TRIGGER_LEN][3] = {};
+
+#ifdef DEVICE_HAND
 // flex sensor data
 bool all_flex_data[2][IMU_DATA_LEN][2] = {};
+adc_oneshot_unit_handle_t adc1_handle;
+#endif
 
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
-adc_oneshot_unit_handle_t adc1_handle;
 
-static TaskHandle_t fsm_task_handle = NULL;
 static TaskHandle_t read_sensor_task_handle = NULL;
 static TaskHandle_t calibration_task_handle = NULL;
 static TaskHandle_t trigger_reference_task_handle = NULL;
+#ifdef DEVICE_CENTRAL
 static TaskHandle_t session_task_handle = NULL;
 static TaskHandle_t joystick_task_handle = NULL;
+static TaskHandle_t fsm_task_handle = NULL;
 static TaskHandle_t actuator_task_handle = NULL;
-static TaskHandle_t collect_inference_data_task_handle = NULL;
+#endif
+// static TaskHandle_t collect_inference_data_task_handle = NULL;
 
 #ifdef DEVICE_CENTRAL
 // TODO: Adjust trigger thresholds based on empirical data
 static float trigger_thresholds[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-
-static void reset_session_sensor_data() {
-    // reset imu data buffer
-    oldest_index = 0;
-    for (int i = 0; i < 4 * IMU_DATA_LEN * 6; i++) {
-        *((float*)all_imu_data[0] + i) = 0;
-    }
-}
 
 static void IRAM_ATTR joystick_button_isr(void* arg) {
     static TickType_t last_press = 0;
@@ -126,22 +124,177 @@ void joystick_init() {
 
 #endif
 
-// ----------------WiFi----------------
+static void reset_session_sensor_data() {
+    // reset imu data buffer
+    oldest_index = 0;
+    for (int i = 0; i < 4 * IMU_DATA_LEN * 6; i++) {
+        *((float*)all_imu_data[0] + i) = 0;
+    }
+}
+
+
+void handle_actuator_by_event(actuator_event_t event) {
+    // in case of preemption, stop any ongoing actuator actions before handling the new event
+#ifdef DEVICE_ARM
+    motor_stop();
+#endif
+    switch (event) {
+        case AE_INVALID:
+            // Flash yellow by 200 ms
+            led_set_color(255, 255, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 200 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(200));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
+        case AE_CLICK:
+            // Flash blue by 200 ms
+            led_set_color(0, 0, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 200 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(200));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 128);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            break;
+        case AE_ERROR:
+            // Flash red at 100 ms 3 times
+#ifdef DEVICE_ARM
+            // strong vibration for 500 ms
+            motor_strong();
+#endif
+            led_set_color(255, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            for (int i = 0; i < 2; ++i) {
+                led_set_color(0, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                led_set_color(255, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
+        case AE_COUNT:
+            // Flash green by 1000 ms
+            led_set_color(0, 255, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 500 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(500));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(500));
+            led_set_color(0, 0, 0);
+            break;
+        case AE_OK:
+            // Flash blue at 100 ms 3 times
+#ifdef DEVICE_ARM
+            // gentle vibration for 300 ms
+            motor_gentle();
+#endif
+            led_set_color(0, 0, 255);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            for (int i = 0; i < 2; ++i) {
+                led_set_color(0, 0, 0);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                led_set_color(0, 0, 255);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            led_set_color(0, 0, 0);
+            break;
+        case AE_ACTION:
+            led_set_color(255, 255, 255);
+#ifdef DEVICE_ARM
+            // gentle vibration for 300 ms
+            motor_gentle();
+#endif
+            vTaskDelay(pdMS_TO_TICKS(300));
+#ifdef DEVICE_ARM
+            motor_stop();
+#endif
+            // decay white in 2600 ms
+            // 200 * 13 ms
+            for (int i = 0; i < 200; i++) {
+                led_set_color(255 - i, 255 - i, 255 - i);
+                vTaskDelay(pdMS_TO_TICKS(13));
+            }
+            led_set_color(0, 0, 0);
+#ifdef DEVICE_ARM
+            // gentle vibration for 300 ms again to notify end
+            motor_gentle();
+            vTaskDelay(pdMS_TO_TICKS(300));
+            motor_stop();
+#endif
+            break;
+        default:
+            break;
+    }
+}
+
+void handle_actuator_by_state(system_state_t state) {
+    switch (state) {
+        case SS_STARTUP:
+            // flash dimmed blue at 250 ms
+            led_set_color(0, 0, 128);
+            vTaskDelay(pdMS_TO_TICKS(250));
+            led_set_color(0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(250));
+            break;
+        case SS_MENU:
+            // shine dimmed blue
+            led_set_color(0, 0, 128);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+        case SS_SESSION_PAUSE:
+            // shine dimmed yellow
+            led_set_color(128, 128, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+        case SS_ERROR:
+            // shine dimmed red
+            led_set_color(128, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            break;
+        default:
+            break;
+    }
+}
+
 #ifdef DEVICE_PERIPHERAL
 
-static void handle_control_message(const ctrl_msg_t& msg) {
-    switch (msg.type)
-    {
-        case MessageType::DATA:
-            ESP_LOGI("RECV", "DATA received");
+void handle_control_message(const ctrl_msg_t& msg) {
+    switch (msg.type) {
+        // DATA_START signals the start of a session (from menu, not from pause)
+        case MessageType::DATA_START:
+            ESP_LOGI("RECV", "DATA_START received");
+            // reset all session sensor data
+            reset_session_sensor_data();
             xTaskNotifyGive(read_sensor_task_handle);
             break;
 
+        // CALI_ZERO signals the start of a calibration procedure
         case MessageType::CALI_ZERO:
             ESP_LOGI("RECV", "CALI_ZERO received");
             xTaskNotifyGive(calibration_task_handle);
             break;
 
+        // CALI_TRIGGER signals the start of a trigger reference procedure
         case MessageType::CALI_TRIGGER:
             ESP_LOGI("RECV", "CALI_TRIGGER received");
             xTaskNotifyGive(trigger_reference_task_handle);
@@ -149,12 +302,37 @@ static void handle_control_message(const ctrl_msg_t& msg) {
 
         case MessageType::SYNC:
             ESP_LOGI("RECV", "SYNC received");
+            // TODO: implement
             break;
+
+        // DATA_PAUSE signals the pause of data collection (end of a session)
+        case MessageType::DATA_PAUSE:
+            reset_session_sensor_data();
+            ESP_LOGI("RECV", "DATA_PAUSE received");
+            break;
+    }
+}
+
+/// @brief For peripheral devices to handle state event messages.
+/// @param msg The state event message that contains a new state or event. 
+void handle_state_event_message(const state_event_msg_t& msg) {
+    if (msg.is_state) {
+        ESP_LOGI("RECV", "State state received: %d", msg.state);
+        if (current_state == msg.state) {
+            // if no state change, skip
+            return;
+        }
+        current_state = msg.state;
+        handle_actuator_by_state(current_state);
+    } else {
+        ESP_LOGI("RECV", "Actuator event received: %d", msg.event);
+        handle_actuator_by_event(msg.event);
     }
 }
 
 #endif
 
+#ifdef DEVICE_CENTRAL
 void send_to_ar() {
     // dummy
 }
@@ -164,7 +342,6 @@ void recv_from_ar() {
     // expect instruction messages that trigger state change
 }
 
-#ifdef DEVICE_CENTRAL
 // ----------------DTW----------------
 // Dynamic Time Warping instances for gyro and accel for each IMU sensor
 static DTW dtws[8];
@@ -181,6 +358,7 @@ void init_dtw() {
 #endif
 
 /// @brief Task to collect IMU data for trigger reference before session starts. Reuse IMU data buffer. 
+/// TODO: to be tested
 void trigger_reference_task(void *arg) {
     while (true) {
         // put it to suspension upon creation
@@ -426,6 +604,7 @@ void joystick_task(void *arg) {
 
         if (triggered) {
             // debounce 500 ms
+            ESP_LOGI("JOYSTICK", "Joystick triggered with x_val=%d, y_val=%d", x_val, y_val);
             vTaskDelay(pdMS_TO_TICKS(500));
         } else {
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -435,149 +614,7 @@ void joystick_task(void *arg) {
 
 #endif
 
-void handle_actuator_by_event(actuator_event_t event) {
-    // in case of preemption, stop any ongoing actuator actions before handling the new event
-#ifdef DEVICE_ARM
-    motor_stop();
-#endif
-    switch (event) {
-        case AE_INVALID:
-            // Flash yellow by 200 ms
-            led_set_color(255, 255, 0);
-#ifdef DEVICE_ARM
-            // gentle vibration for 200 ms
-            motor_gentle();
-#endif
-            vTaskDelay(pdMS_TO_TICKS(200));
-#ifdef DEVICE_ARM
-            motor_stop();
-#endif
-            led_set_color(0, 0, 0);
-            break;
-        case AE_CLICK:
-            // Flash blue by 200 ms
-            led_set_color(0, 0, 0);
-#ifdef DEVICE_ARM
-            // gentle vibration for 200 ms
-            motor_gentle();
-#endif
-            vTaskDelay(pdMS_TO_TICKS(200));
-#ifdef DEVICE_ARM
-            motor_stop();
-#endif
-            led_set_color(0, 0, 128);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            break;
-        case AE_ERROR:
-            // Flash red at 100 ms 3 times
-#ifdef DEVICE_ARM
-            // strong vibration for 500 ms
-            motor_strong();
-#endif
-            led_set_color(255, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            for (int i = 0; i < 2; ++i) {
-                led_set_color(0, 0, 0);
-                vTaskDelay(pdMS_TO_TICKS(100));
-                led_set_color(255, 0, 0);
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-#ifdef DEVICE_ARM
-            motor_stop();
-#endif
-            led_set_color(0, 0, 0);
-            break;
-        case AE_COUNT:
-            // Flash green by 1000 ms
-            led_set_color(0, 255, 0);
-#ifdef DEVICE_ARM
-            // gentle vibration for 500 ms
-            motor_gentle();
-#endif
-            vTaskDelay(pdMS_TO_TICKS(500));
-#ifdef DEVICE_ARM
-            motor_stop();
-#endif
-            vTaskDelay(pdMS_TO_TICKS(500));
-            led_set_color(0, 0, 0);
-            break;
-        case AE_OK:
-            // Flash blue at 100 ms 3 times
-#ifdef DEVICE_ARM
-            // gentle vibration for 300 ms
-            motor_gentle();
-#endif
-            led_set_color(0, 0, 255);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            for (int i = 0; i < 2; ++i) {
-                led_set_color(0, 0, 0);
-                vTaskDelay(pdMS_TO_TICKS(100));
-                led_set_color(0, 0, 255);
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-#ifdef DEVICE_ARM
-            motor_stop();
-#endif
-            led_set_color(0, 0, 0);
-            break;
-        case AE_ACTION:
-            led_set_color(255, 255, 255);
-#ifdef DEVICE_ARM
-            // gentle vibration for 300 ms
-            motor_gentle();
-#endif
-            vTaskDelay(pdMS_TO_TICKS(300));
-#ifdef DEVICE_ARM
-            motor_stop();
-#endif
-            // decay white in 2600 ms
-            // 200 * 13 ms
-            for (int i = 0; i < 200; i++) {
-                led_set_color(255 - i, 255 - i, 255 - i);
-                vTaskDelay(pdMS_TO_TICKS(13));
-            }
-            led_set_color(0, 0, 0);
-#ifdef DEVICE_ARM
-            // gentle vibration for 300 ms again to notify end
-            motor_gentle();
-            vTaskDelay(pdMS_TO_TICKS(300));
-            motor_stop();
-#endif
-            break;
-        default:
-            break;
-    }
-}
-
-void handle_actuator_by_state(system_state_t state) {
-    switch (state) {
-        case SS_STARTUP:
-            // flash dimmed blue at 250 ms
-            led_set_color(0, 0, 128);
-            vTaskDelay(pdMS_TO_TICKS(250));
-            led_set_color(0, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(250));
-            break;
-        case SS_MENU:
-            // shine dimmed blue
-            led_set_color(0, 0, 128);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            break;
-        case SS_SESSION_PAUSE:
-            // shine dimmed yellow
-            led_set_color(128, 128, 0);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            break;
-        case SS_ERROR:
-            // shine dimmed red
-            led_set_color(128, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            break;
-        default:
-            break;
-    }
-}
-
+#ifdef DEVICE_CENTRAL
 void actuator_task(void *arg) {
     actuator_event_t event;
     while (true) {
@@ -595,6 +632,7 @@ void actuator_task(void *arg) {
         }
     }
 }
+#endif
 
 /// @brief Task function for reading IMU data continuously during a session.
 /// @param arg 
@@ -673,7 +711,7 @@ void read_sensor_task(void *arg) {
             sensor_msg.flex_ind = flex_ind_bent;
 #endif
             sensor_msg.index = oldest_index;
-            sensor_msg.type = MessageType::DATA;
+            sensor_msg.type = MessageType::DATA_START;
             esp_err_t result = esp_now_send(
                 CENTRAL_MAC,
                 reinterpret_cast<const uint8_t *>(&sensor_msg),
@@ -693,9 +731,6 @@ void read_sensor_task(void *arg) {
             debug_counter = (debug_counter + 1) % IMU_DATA_F;
             vTaskDelay(pdMS_TO_TICKS(1000 / IMU_DATA_F));
         }
-#ifdef DEVICE_CENTRAL
-        // send_imu_data_to_laptop();
-#endif
     }
 }
 
@@ -754,6 +789,7 @@ void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_
     ESP_LOGI("I2C", "I2C master initialized successfully");
 }
 
+#ifdef DEVICE_HAND
 void adc_init() {
     // Initialize ADC1
     adc_oneshot_unit_init_cfg_t init_config = {
@@ -772,7 +808,7 @@ void adc_init() {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
 
-#ifdef DEVICE_HAND
+
     // flex sensors
     ESP_ERROR_CHECK(
         adc_oneshot_config_channel(
@@ -788,7 +824,6 @@ void adc_init() {
             &channel_config
         )
     );
-#endif
 
 #ifdef DEVICE_CENTRAL
     ESP_ERROR_CHECK(
@@ -805,10 +840,11 @@ void adc_init() {
             &channel_config
         )
     );
-#endif
-
+    
     ESP_LOGI("FLEX", "Flex sensor ADC initialized");
+#endif
 }
+#endif
 
 // ------------------Events control ------------------
 
@@ -1013,7 +1049,10 @@ extern "C" void app_main() {
 
 #endif
     pwm_ctrl_init();
+
+#ifdef DEVICE_HAND
     adc_init();
+#endif
 
 #ifdef DEVICE_PERIPHERAL
     uint8_t count = 0, channel = 0;
@@ -1041,7 +1080,25 @@ extern "C" void app_main() {
 #ifdef DEVICE_CENTRAL
     // attach to interrupt for buttons
     joystick_init();
-#endif
+
+    xTaskCreatePinnedToCore(
+        joystick_task,
+        "Joystick Task",
+        4096,
+        NULL,
+        5,
+        &joystick_task_handle,
+        tskNO_AFFINITY
+    );
+    xTaskCreatePinnedToCore(
+        session_task,
+        "Session Task",
+        4096,
+        NULL,
+        5,
+        &session_task_handle,
+        tskNO_AFFINITY
+    );
     xTaskCreatePinnedToCore(
         actuator_task,
         "Actuator Task",
@@ -1051,6 +1108,15 @@ extern "C" void app_main() {
         &actuator_task_handle,
         tskNO_AFFINITY
     );
+#endif
+#ifdef DEVICE_PERIPHERAL
+    // actuator initial state
+    handle_state_event_message({
+        .state = SS_STARTUP,
+        .event = AE_ERROR,
+        .is_state = true
+    });
+#endif
     xTaskCreatePinnedToCore(
         read_sensor_task,
         "Read SENSOR Task",
@@ -1078,26 +1144,18 @@ extern "C" void app_main() {
         &trigger_reference_task_handle,
         tskNO_AFFINITY
     );
-    xTaskCreatePinnedToCore(
-        joystick_task,
-        "Joystick Task",
-        4096,
-        NULL,
-        5,
-        &joystick_task_handle,
-        tskNO_AFFINITY
-    );
-    xTaskCreatePinnedToCore(
-        session_task,
-        "Session Task",
-        4096,
-        NULL,
-        5,
-        &session_task_handle,
-        tskNO_AFFINITY
-    );
 
     ESP_LOGI("SYSTEM", "All initialization done");
+
+#ifdef DEVICE_PERIPHERAL
+    handle_state_event_message({
+        .state = SS_MENU,
+        .event = AE_ERROR,
+        .is_state = true
+    });
+#endif
+
+#ifdef DEVICE_CENTRAL
     // All init done, notify system
     ESP_LOGI("SYSTEM", "Pushing SE_INIT_READY event");
     push_sys_event(SE_INIT_READY);
@@ -1120,6 +1178,7 @@ extern "C" void app_main() {
     //     &collect_inference_data_task_handle,
     //     tskNO_AFFINITY
     // );
+#endif
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));
