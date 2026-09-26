@@ -91,6 +91,12 @@ void handle_session(system_event_t event) {
             current_state = SS_SESSION_PAUSE;
             pause_session();
             break;
+        case SE_SESSION_END:
+            ESP_LOGI("FSM", "SS_SESSION state, received SE_SESSION_END event");
+            push_actuator_event(AE_OK);
+            current_state = SS_MENU;
+            end_session();
+            break;
         case SE_ERROR:
             ESP_LOGI("FSM", "SS_SESSION state, received SE_ERROR event");
             push_actuator_event(AE_ERROR);
@@ -126,6 +132,12 @@ void handle_session_pause(system_event_t event) {
             push_actuator_event(AE_CLICK);
             current_state = SS_MENU;
             // end the session early, back to menu
+            end_session();
+            break;
+        case SE_SESSION_END:
+            ESP_LOGI("FSM", "SS_SESSION_PAUSE state, received SE_SESSION_END event");
+            push_actuator_event(AE_OK);
+            current_state = SS_MENU;
             end_session();
             break;
         case SE_ERROR:

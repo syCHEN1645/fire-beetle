@@ -81,9 +81,21 @@ static void reset_session_sensor_data() {
 }
 
 static void IRAM_ATTR joystick_button_isr(void* arg) {
+    static TickType_t last_press = 0;
+
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    system_event_t event = SE_CLICK;
-    xQueueSendFromISR(event_queue, &event, &xHigherPriorityTaskWoken);
+    TickType_t now = xTaskGetTickCountFromISR();
+    // debounce
+    if ((now - last_press) >= pdMS_TO_TICKS(300)) {
+        last_press = now;
+        system_event_t event = SE_CLICK;
+        xQueueSendFromISR(
+            event_queue,
+            &event,
+            &xHigherPriorityTaskWoken
+        );
+    }
+
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
@@ -814,6 +826,8 @@ void start_trigger_reference() {
 void start_session() {
     // inform all devices to start reading sensor data
     send_start_msg();
+    // TODO: set
+    session_target = 3;
     xTaskNotifyGive(read_sensor_task_handle);
     // wake up session task
     xTaskNotifyGive(session_task_handle);
@@ -824,6 +838,13 @@ void session_task(void *arg) {
         // sleep by default
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         while (current_state == SS_SESSION || current_state == SS_SESSION_PAUSE) {
+            if (session_target <= 0) {
+                ESP_LOGI("SESSION", "Session target is 0, end session");
+                reset_session_sensor_data();
+                reset_session_progress();
+                push_sys_event(SE_SESSION_END);
+                break;
+            }
 
             // Rest for 3000 ms
             // res = 0 if timeout, meaning no notification was received during 3000 ms
@@ -858,6 +879,7 @@ void session_task(void *arg) {
                     // session exited
                     reset_session_sensor_data();
                     reset_session_progress();
+                    // do not push end event, already exited by other means
                     break;
                 }
             }
